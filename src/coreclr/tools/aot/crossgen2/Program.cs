@@ -542,27 +542,53 @@ namespace ILCompiler
                     bool partial = Get(_command.Partial);
                     compilationGroup.ApplyProfileGuidedOptimizationData(profileDataManager, partial);
 
+                    // DIAGNOSTIC LOGGING
+                    logger.Writer.WriteLine($"[DIAG] Partial mode: {partial}");
+                    logger.Writer.WriteLine($"[DIAG] ProfileDataManager: {(profileDataManager != null ? "present" : "null")}");
+                    logger.Writer.WriteLine($"[DIAG] RootingModules count: {rootingModules.Count}");
+                    logger.Writer.WriteLine($"[DIAG] InputModules count: {inputModules.Count}");
+                    foreach (var m in rootingModules)
+                    {
+                        logger.Writer.WriteLine($"[DIAG]   Rooting module: {m.Assembly.GetName().Name}");
+                    }
+                    foreach (var m in inputModules)
+                    {
+                        logger.Writer.WriteLine($"[DIAG]   Input module: {m.Assembly.GetName().Name}");
+                    }
+
                     if ((singleMethod == null) && !compileNoMethods)
                     {
                         // For normal compilations add compilation roots.
+                        int rootProviderIndex = 0;
                         foreach (var module in rootingModules)
                         {
-                            compilationRoots.Add(new ReadyToRunProfilingRootProvider(module, profileDataManager));
+                            // Add profiling root provider only if there's actual profile data
+                            if (profileDataManager != null && mibcFiles.Count > 0)
+                            {
+                                var profilingProvider = new ReadyToRunProfilingRootProvider(module, profileDataManager);
+                                compilationRoots.Add(profilingProvider);
+                                logger.Writer.WriteLine($"[DIAG] Added ReadyToRunProfilingRootProvider #{rootProviderIndex++} for {module.Assembly.GetName().Name}");
+                            }
                             // If we're doing partial precompilation, only use profile data.
                             if (!partial)
                             {
                                 if (ReadyToRunVisibilityRootProvider.UseVisibilityBasedRootProvider(module))
                                 {
-                                    compilationRoots.Add(new ReadyToRunVisibilityRootProvider(module));
+                                    var visibilityProvider = new ReadyToRunVisibilityRootProvider(module);
+                                    compilationRoots.Add(visibilityProvider);
+                                    logger.Writer.WriteLine($"[DIAG] Added ReadyToRunVisibilityRootProvider #{rootProviderIndex++} for {module.Assembly.GetName().Name}");
 
                                     if (ReadyToRunXmlRootProvider.TryCreateRootProviderFromEmbeddedDescriptorFile(module, out ReadyToRunXmlRootProvider xmlProvider))
                                     {
                                         compilationRoots.Add(xmlProvider);
+                                        logger.Writer.WriteLine($"[DIAG] Added ReadyToRunXmlRootProvider #{rootProviderIndex++} for {module.Assembly.GetName().Name}");
                                     }
                                 }
                                 else
                                 {
-                                    compilationRoots.Add(new ReadyToRunLibraryRootProvider(module));
+                                    var libraryProvider = new ReadyToRunLibraryRootProvider(module);
+                                    compilationRoots.Add(libraryProvider);
+                                    logger.Writer.WriteLine($"[DIAG] Added ReadyToRunLibraryRootProvider #{rootProviderIndex++} for {module.Assembly.GetName().Name}");
                                 }
                             }
 
@@ -571,6 +597,7 @@ namespace ILCompiler
                                 break;
                             }
                         }
+                        logger.Writer.WriteLine($"[DIAG] Total root providers added: {compilationRoots.Count}");
                     }
 
                     if (!typeSystemContext.TargetAllowsRuntimeCodeGeneration && typeSystemContext.BubbleIncludesCoreModule)

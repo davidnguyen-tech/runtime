@@ -304,6 +304,70 @@ CorJitResult CILJit::compileMethod(ICorJitInfo*         compHnd,
 
     if (result == CORJIT_OK)
     {
+        const char *methodName = compHnd->getMethodNameFromMetadata(methodInfo->ftn, nullptr, nullptr, nullptr, 0);
+        CORINFO_CLASS_HANDLE classHandle = compHnd->getMethodClass(methodInfo->ftn);
+        const char *className = compHnd->getClassNameFromMetadata(classHandle, nullptr);
+        const char *assemblyName = compHnd->getClassAssemblyName(classHandle);
+        
+        // Check for generic instantiations
+        char fullNameBuffer[2048];
+        int offset = snprintf(fullNameBuffer, sizeof(fullNameBuffer), "%s!%s", assemblyName, className);
+        
+        // Get method instantiation
+        CORINFO_SIG_INFO sigInfo;
+        compHnd->getMethodSig(methodInfo->ftn, &sigInfo, classHandle);
+        
+        if (sigInfo.sigInst.classInstCount > 0)
+        {
+            offset += snprintf(fullNameBuffer + offset, sizeof(fullNameBuffer) - offset, "<");
+            for (unsigned i = 0; i < sigInfo.sigInst.classInstCount; i++)
+            {
+                if (i > 0)
+                {
+                    offset += snprintf(fullNameBuffer + offset, sizeof(fullNameBuffer) - offset, ", ");
+                }
+                CORINFO_CLASS_HANDLE typeArg = sigInfo.sigInst.classInst[i];
+                const char* typeArgName = compHnd->getClassNameFromMetadata(typeArg, nullptr);
+                const char* typeArgAssembly = compHnd->getClassAssemblyName(typeArg);
+                if (typeArgAssembly != nullptr && typeArgName != nullptr)
+                {
+                    offset += snprintf(fullNameBuffer + offset, sizeof(fullNameBuffer) - offset, "[%s]%s", typeArgAssembly, typeArgName);
+                }
+                else if (typeArgName != nullptr)
+                {
+                    offset += snprintf(fullNameBuffer + offset, sizeof(fullNameBuffer) - offset, "%s", typeArgName);
+                }
+            }
+            offset += snprintf(fullNameBuffer + offset, sizeof(fullNameBuffer) - offset, ">");
+        }
+        
+        offset += snprintf(fullNameBuffer + offset, sizeof(fullNameBuffer) - offset, ".%s", methodName);
+        
+        if (sigInfo.sigInst.methInstCount > 0)
+        {
+            offset += snprintf(fullNameBuffer + offset, sizeof(fullNameBuffer) - offset, "<");
+            for (unsigned i = 0; i < sigInfo.sigInst.methInstCount; i++)
+            {
+                if (i > 0)
+                {
+                    offset += snprintf(fullNameBuffer + offset, sizeof(fullNameBuffer) - offset, ", ");
+                }
+                CORINFO_CLASS_HANDLE typeArg = sigInfo.sigInst.methInst[i];
+                const char* typeArgName = compHnd->getClassNameFromMetadata(typeArg, nullptr);
+                const char* typeArgAssembly = compHnd->getClassAssemblyName(typeArg);
+                if (typeArgAssembly != nullptr && typeArgName != nullptr)
+                {
+                    offset += snprintf(fullNameBuffer + offset, sizeof(fullNameBuffer) - offset, "[%s]%s", typeArgAssembly, typeArgName);
+                }
+                else if (typeArgName != nullptr)
+                {
+                    offset += snprintf(fullNameBuffer + offset, sizeof(fullNameBuffer) - offset, "%s", typeArgName);
+                }
+            }
+            offset += snprintf(fullNameBuffer + offset, sizeof(fullNameBuffer) - offset, ">");
+        }
+        
+        printf ("Compile JIT method %s\n", fullNameBuffer);
         *entryAddress = (BYTE*)methodCodePtr;
     }
 

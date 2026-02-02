@@ -30,8 +30,13 @@ namespace ILCompiler
 
         public void AddCompilationRoots(IRootingServiceProvider rootProvider)
         {
+            int profileMethodCount = 0;
+            int rootedMethodCount = 0;
+            Dictionary<string, int> genericTypeUsage = new Dictionary<string, int>();
+            
             foreach (var method in _profileData)
             {
+                profileMethodCount++;
                 try
                 {
                     // Validate that this method is fully instantiated
@@ -67,6 +72,59 @@ namespace ILCompiler
                     {
                         ReadyToRunLibraryRootProvider.CheckCanGenerateMethod(method);
                         rootProvider.AddCompilationRoot(method, rootMinimalDependencies: true, reason: "Profile triggered method");
+                        rootedMethodCount++;
+                        
+                        // Log generic instantiations with their type arguments
+                        if (method.HasInstantiation || method.OwningType.HasInstantiation)
+                        {
+                            StringBuilder sb = new StringBuilder();
+                            sb.Append($"  {method.OwningType}");
+                            
+                            if (method.HasInstantiation)
+                            {
+                                sb.Append(".");
+                                sb.Append(method.Name.ToString());
+                                sb.Append("<");
+                                for (int i = 0; i < method.Instantiation.Length; i++)
+                                {
+                                    if (i > 0) sb.Append(", ");
+                                    sb.Append(method.Instantiation[i]);
+                                }
+                                sb.Append(">");
+                            }
+                            else
+                            {
+                                sb.Append(".");
+                                sb.Append(method.Name.ToString());
+                            }
+                            
+                            Console.WriteLine($"[DIAG]   Generic: {sb}");
+                            
+                            // Track type argument usage
+                            if (method.OwningType.HasInstantiation)
+                            {
+                                for (int i = 0; i < method.OwningType.Instantiation.Length; i++)
+                                {
+                                    string typeName = method.OwningType.Instantiation[i].ToString();
+                                    if (genericTypeUsage.TryGetValue(typeName, out int count))
+                                        genericTypeUsage[typeName] = count + 1;
+                                    else
+                                        genericTypeUsage[typeName] = 1;
+                                }
+                            }
+                            
+                            if (method.HasInstantiation)
+                            {
+                                for (int i = 0; i < method.Instantiation.Length; i++)
+                                {
+                                    string typeName = method.Instantiation[i].ToString();
+                                    if (genericTypeUsage.TryGetValue(typeName, out int count))
+                                        genericTypeUsage[typeName] = count + 1;
+                                    else
+                                        genericTypeUsage[typeName] = 1;
+                                }
+                            }
+                        }
                     }
                 }
                 catch (TypeSystemException)
@@ -74,6 +132,16 @@ namespace ILCompiler
                     // Individual methods can fail to load types referenced in their signatures.
                     // Skip them in library mode since they're not going to be callable.
                     continue;
+                }
+            }
+            Console.WriteLine($"[DIAG] ReadyToRunProfilingRootProvider for {_module.Assembly.GetName().Name}: {profileMethodCount} methods in profile, rooted {rootedMethodCount} methods");
+            
+            if (genericTypeUsage.Count > 0)
+            {
+                Console.WriteLine($"[DIAG] Type arguments used in generic instantiations:");
+                foreach (var kvp in genericTypeUsage.OrderByDescending(x => x.Value))
+                {
+                    Console.WriteLine($"[DIAG]   {kvp.Key}: {kvp.Value} instantiations");
                 }
             }
         }

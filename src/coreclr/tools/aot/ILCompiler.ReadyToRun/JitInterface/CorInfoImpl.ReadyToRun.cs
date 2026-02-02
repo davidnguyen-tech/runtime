@@ -522,8 +522,42 @@ namespace Internal.JitInterface
 
         public static bool ShouldSkipCompilation(InstructionSetSupport instructionSetSupport, MethodDesc methodNeedingCode)
         {
+            string GetGenericInfo(MethodDesc method)
+            {
+                if (!method.HasInstantiation && !method.OwningType.HasInstantiation)
+                    return "";
+                
+                var sb = new System.Text.StringBuilder();
+                if (method.OwningType.HasInstantiation)
+                {
+                    sb.Append(" TypeArgs<");
+                    bool first = true;
+                    foreach (var typeArg in method.OwningType.Instantiation)
+                    {
+                        if (!first) sb.Append(", ");
+                        sb.Append(typeArg.ToString());
+                        first = false;
+                    }
+                    sb.Append(">");
+                }
+                if (method.HasInstantiation)
+                {
+                    sb.Append(" MethodArgs<");
+                    bool first = true;
+                    foreach (var typeArg in method.Instantiation)
+                    {
+                        if (!first) sb.Append(", ");
+                        sb.Append(typeArg.ToString());
+                        first = false;
+                    }
+                    sb.Append(">");
+                }
+                return sb.ToString();
+            }
+
             if (methodNeedingCode.IsAggressiveOptimization)
             {
+                Console.WriteLine($"[SKIP] AggressiveOptimization: {methodNeedingCode}{GetGenericInfo(methodNeedingCode)}");
                 return true;
             }
 
@@ -534,15 +568,18 @@ namespace Internal.JitInterface
             if (HardwareIntrinsicHelpers.IsHardwareIntrinsic(methodNeedingCode)
                 && ((ReadyToRunCompilerContext)methodNeedingCode.Context).TargetAllowsRuntimeCodeGeneration)
             {
+                Console.WriteLine($"[SKIP] HardwareIntrinsic: {methodNeedingCode}{GetGenericInfo(methodNeedingCode)}");
                 return true;
             }
 
             if (methodNeedingCode.IsAbstract)
             {
+                Console.WriteLine($"[SKIP] Abstract: {methodNeedingCode}{GetGenericInfo(methodNeedingCode)}");
                 return true;
             }
             if (methodNeedingCode.IsInternalCall)
             {
+                Console.WriteLine($"[SKIP] InternalCall: {methodNeedingCode}{GetGenericInfo(methodNeedingCode)}");
                 return true;
             }
             if (methodNeedingCode.OwningType.IsDelegate && (
@@ -552,13 +589,15 @@ namespace Internal.JitInterface
                 methodNeedingCode.Name.SequenceEqual("EndInvoke"u8)))
             {
                 // Special methods on delegate types
+                Console.WriteLine($"[SKIP] DelegateSpecialMethod: {methodNeedingCode}{GetGenericInfo(methodNeedingCode)}");
                 return true;
             }
             if (ShouldCodeNotBeCompiledIntoFinalImage(instructionSetSupport, methodNeedingCode))
             {
+                Console.WriteLine($"[SKIP] ShouldNotBeInFinalImage: {methodNeedingCode}{GetGenericInfo(methodNeedingCode)}");
                 return true;
             }
-
+            Console.WriteLine($"[DO NOT SKIP] ShouldNotBeInFinalImage: {methodNeedingCode}{GetGenericInfo(methodNeedingCode)}");
             return false;
         }
 

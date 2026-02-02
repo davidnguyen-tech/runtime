@@ -7,7 +7,7 @@ using Internal.TypeSystem.Ecma;
 using Internal.TypeSystem;
 using Internal.JitInterface;
 using System.Reflection.Metadata;
-
+using System;
 namespace ILCompiler
 {
     /// <summary>
@@ -26,22 +26,43 @@ namespace ILCompiler
 
         public void AddCompilationRoots(IRootingServiceProvider rootProvider)
         {
+            int typeCount = 0;
+            int rootedMethodCount = 0;
+            int skippedGenericTypes = 0;
+            int instantiatedGenericTypes = 0;
+            
+            Console.WriteLine($"[DIAG] ReadyToRunLibraryRootProvider: Starting root discovery for {_module.Assembly.GetName().Name}");
+            
             foreach (MetadataType type in _module.GetAllTypes())
             {
+                typeCount++;
                 MetadataType typeWithMethods = type;
                 if (type.HasInstantiation)
                 {
+                    Console.WriteLine($"[DIAG]   Generic type DEFINED: {type} (params: {type.Instantiation.Length})");
                     typeWithMethods = InstantiateIfPossible(type);
                     if (typeWithMethods == null)
+                    {
+                        Console.WriteLine($"[DIAG]     SKIPPED: Has valuetype constraint, cannot use __Canon");
+                        skippedGenericTypes++;
                         continue;
+                    }
+                    Console.WriteLine($"[DIAG]     Instantiated as: {typeWithMethods}");
+                    instantiatedGenericTypes++;
                 }
 
-                RootMethods(typeWithMethods, "Library module method", rootProvider);
+                rootedMethodCount += RootMethods(typeWithMethods, "Library module method", rootProvider);
             }
+            Console.WriteLine($"[DIAG] ReadyToRunLibraryRootProvider for {_module.Assembly.GetName().Name}: scanned {typeCount} types, rooted {rootedMethodCount} methods");
+            Console.WriteLine($"[DIAG]   Generic types: {instantiatedGenericTypes} instantiated with __Canon, {skippedGenericTypes} skipped (valuetype constraint)");
         }
 
-        private void RootMethods(MetadataType type, string reason, IRootingServiceProvider rootProvider)
+        private int RootMethods(MetadataType type, string reason, IRootingServiceProvider rootProvider)
         {
+            int rootedCount = 0;
+            int skippedGenericMethods = 0;
+            int instantiatedGenericMethods = 0;
+            
             foreach (MethodDesc method in type.GetAllMethods())
             {
                 // Skip methods with no IL
@@ -54,10 +75,17 @@ namespace ILCompiler
                 MethodDesc methodToRoot = method;
                 if (method.HasInstantiation)
                 {
+                    Console.WriteLine($"[DIAG]     Generic method DEFINED: {type}.{method.Name.ToString()} (params: {method.Instantiation.Length})");
                     methodToRoot = InstantiateIfPossible(method);
 
                     if (methodToRoot == null)
+                    {
+                        Console.WriteLine($"[DIAG]       SKIPPED: Has valuetype constraint, cannot use __Canon");
+                        skippedGenericMethods++;
                         continue;
+                    }
+                    Console.WriteLine($"[DIAG]       Instantiated as: {methodToRoot}");
+                    instantiatedGenericMethods++;
                 }
 
                 try
@@ -66,15 +94,24 @@ namespace ILCompiler
                     {
                         CheckCanGenerateMethod(methodToRoot);
                         rootProvider.AddCompilationRoot(methodToRoot, rootMinimalDependencies: false, reason: reason);
+                        rootedCount++;
                     }
                 }
-                catch (TypeSystemException)
+                catch (TypeSystemException ex)
                 {
                     // Individual methods can fail to load types referenced in their signatures.
                     // Skip them in library mode since they're not going to be callable.
+                    Console.WriteLine($"[DIAG]     Method {method.Name.ToString()} SKIPPED due to TypeSystemException: {ex.Message}");
                     continue;
                 }
             }
+            
+            if (instantiatedGenericMethods > 0 || skippedGenericMethods > 0)
+            {
+                Console.WriteLine($"[DIAG]   Type {type}: {instantiatedGenericMethods} generic methods instantiated, {skippedGenericMethods} skipped");
+            }
+            
+            return rootedCount;
         }
 
         /// <summary>

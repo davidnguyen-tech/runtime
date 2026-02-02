@@ -14,19 +14,11 @@ namespace System.Runtime.CompilerServices
             [Intrinsic]  // the Mono AOT compiler will change this flag to false for FullAOT scenarios, otherwise this code is used
 #endif
             get;
-        } = AppContext.TryGetSwitch("System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported", out bool isDynamicCodeSupported) ? isDynamicCodeSupported : true;
-
+        } = false;
         [FeatureGuard(typeof(RequiresDynamicCodeAttribute))]
         public static bool IsDynamicCodeCompiled
         {
-#if MONO
-            [Intrinsic]  // the Mono AOT compiler and Interpreter will change this flag to false for FullAOT and interpreted scenarios, otherwise this code is used
-#endif
-#if CORECLR && (TARGET_WASM || TARGET_IOS || TARGET_TVOS || TARGET_MACCATALYST)
             get => false;
-#else
-            get => IsDynamicCodeSupported;
-#endif
         }
     }
 }
