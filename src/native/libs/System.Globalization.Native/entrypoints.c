@@ -54,6 +54,8 @@ static const Entry s_globalizationNative[] =
     DllImportEntry(GlobalizationNative_StartsWith)
 #ifndef __wasm__
     DllImportEntry(GlobalizationNative_GetTimeZoneDisplayName)
+    DllImportEntry(GlobalizationNative_GetCanonicalTimeZoneId)
+    DllImportEntry(GlobalizationNative_EnumerateCanonicalLocationTimeZoneIds)
     DllImportEntry(GlobalizationNative_IanaIdToWindowsId)
     DllImportEntry(GlobalizationNative_WindowsIdToIanaId)
 #endif

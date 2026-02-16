@@ -272,7 +272,7 @@ namespace System
             {
                 string tzLookupFilePath = Path.Combine(tzFileDir, "tzlookup.xml");
                 if (!File.Exists(tzLookupFilePath))
-                    return null;
+                    return GetCanonicalLocationTimeZoneIds();
 
                 HashSet<string>? tzLookupIDs = null;
                 try
@@ -306,6 +306,40 @@ namespace System
                 }
 
                 return tzLookupIDs;
+            }
+
+            /// <summary>
+            /// Gets the set of canonical location timezone IDs from ICU.
+            /// Used as a fallback when tzlookup.xml is not available (Android API &lt; 26).
+            /// </summary>
+            private static unsafe HashSet<string>? GetCanonicalLocationTimeZoneIds()
+            {
+                const int BufferLength = 16384;
+                byte* buffer = stackalloc byte[BufferLength];
+
+                int totalWritten = Interop.Globalization.EnumerateCanonicalLocationTimeZoneIds(buffer, BufferLength);
+
+                if (totalWritten <= 0 || totalWritten > BufferLength)
+                    return null;
+
+                var ids = new HashSet<string>();
+                int offset = 0;
+                while (offset < totalWritten)
+                {
+                    ReadOnlySpan<byte> remaining = new ReadOnlySpan<byte>(buffer + offset, totalWritten - offset);
+                    int nullIndex = remaining.IndexOf((byte)0);
+                    if (nullIndex < 0)
+                        break;
+
+                    if (nullIndex > 0)
+                    {
+                        string id = System.Text.Encoding.UTF8.GetString(buffer + offset, nullIndex);
+                        ids.Add(id);
+                    }
+                    offset += nullIndex + 1;
+                }
+
+                return ids.Count > 0 ? ids : null;
             }
 
             private static unsafe bool IsLegacyTimeZoneId(string timeZoneId)
@@ -407,7 +441,7 @@ namespace System
                     _byteOffsets[i] = byteOffset + dataOffset;
                     _ids[i] = id;
                     _lengths[i] = length;
-                    if (tzLookupIDs != null)
+                    if (tzLookupIDs is not null)
                     {
                         _isBackwards[i] = !tzLookupIDs.Contains(id);
                     }

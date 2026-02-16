@@ -24,5 +24,8 @@ internal static partial class Interop
 
         [LibraryImport(Libraries.GlobalizationNative, EntryPoint = "GlobalizationNative_GetCanonicalTimeZoneId", StringMarshalling = StringMarshalling.Utf16)]
         internal static unsafe partial int GetCanonicalTimeZoneId(string timeZoneId, char* canonicalId, int canonicalIdLength);
+
+        [LibraryImport(Libraries.GlobalizationNative, EntryPoint = "GlobalizationNative_EnumerateCanonicalLocationTimeZoneIds")]
+        internal static unsafe partial int EnumerateCanonicalLocationTimeZoneIds(byte* buffer, int bufferLength);
     }
 }

@@ -5,6 +5,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "pal_errors_internal.h"
 #include "pal_locale_internal.h"
@@ -353,4 +354,43 @@ int32_t GlobalizationNative_GetCanonicalTimeZoneId(const UChar* timeZoneId, UCha
     }
 
     return 0;
+}
+
+/*
+Enumerate canonical location timezone IDs from ICU.
+IDs are written to the buffer as null-terminated UTF-8 strings, concatenated back-to-back.
+Returns the total number of bytes written, or -1 on error.
+*/
+int32_t GlobalizationNative_EnumerateCanonicalLocationTimeZoneIds(char* buffer, int32_t bufferLength)
+{
+    UErrorCode status = U_ZERO_ERROR;
+    UEnumeration* enumeration = ucal_openTimeZoneIDEnumeration(UCAL_ZONE_TYPE_CANONICAL_LOCATION, NULL, NULL, &status);
+
+    if (U_FAILURE(status) || enumeration == NULL)
+    {
+        return -1;
+    }
+
+    int32_t totalWritten = 0;
+    int32_t idLength = 0;
+    const char* id;
+
+    while ((id = uenum_next(enumeration, &idLength, &status)) != NULL)
+    {
+        if (U_FAILURE(status))
+        {
+            break;
+        }
+
+        int32_t needed = idLength + 1; // +1 for null terminator
+        if (totalWritten + needed <= bufferLength)
+        {
+            memcpy(buffer + totalWritten, id, (size_t)idLength);
+            buffer[totalWritten + idLength] = '\0';
+        }
+        totalWritten += needed;
+    }
+
+    uenum_close(enumeration);
+    return totalWritten;
 }
