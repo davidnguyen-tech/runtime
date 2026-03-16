@@ -62,6 +62,10 @@
 #include "tailcallhelp.h"
 #include "patchpointinfo.h"
 
+#ifdef FEATURE_OBJCMARSHAL
+#include "interoplibinterface.h"
+#endif // FEATURE_OBJCMARSHAL
+
 // The Stack Overflow probe takes place in the COOPERATIVE_TRANSITION_BEGIN() macro
 //
 
@@ -6533,6 +6537,13 @@ DWORD CEEInfo::getMethodAttribsInternal (CORINFO_METHOD_HANDLE ftn)
     if (pMD->IsPInvoke())
     {
         result |= CORINFO_FLG_PINVOKE;
+
+#ifdef FEATURE_OBJCMARSHAL
+        if (Interop::ShouldCheckForPendingException((PInvokeMethodDesc*)pMD))
+        {
+            result |= CORINFO_FLG_PINVOKE_OBJC_EXCEPTION;
+        }
+#endif // FEATURE_OBJCMARSHAL
     }
 
     if (IsMdRequireSecObject(attribs))

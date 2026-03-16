@@ -1124,7 +1124,17 @@ namespace Internal.JitInterface
                 result |= CorInfoFlag.CORINFO_FLG_SHAREDINST;
 
             if (method.IsPInvoke)
+            {
                 result |= CorInfoFlag.CORINFO_FLG_PINVOKE;
+
+#if READYTORUN
+                PInvokeMetadata metadata = method.GetPInvokeMethodMetadata();
+                if (MarshalHelpers.ShouldCheckForPendingException(method.Context.Target, metadata))
+                {
+                    result |= CorInfoFlag.CORINFO_FLG_PINVOKE_OBJC_EXCEPTION;
+                }
+#endif
+            }
 
 #if READYTORUN
             if (method.RequireSecObject)
