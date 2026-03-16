@@ -7159,6 +7159,19 @@ void Lowering::InsertPInvokeCallEpilog(GenTreeCall* call)
         m_compiler->fgMorphTree(helperCall);
         BlockRange().InsertAfter(call, LIR::SeqTree(m_compiler, helperCall));
         ContainCheckCallOperands(helperCall);
+
+        // If this P/Invoke requires an Objective-C pending exception check, emit the check
+        // after the GC transition back to cooperative mode.
+        if ((call->gtCallMoreFlags & GTF_CALL_M_PINVOKE_OBJC_EXCEPTION) != 0)
+        {
+            GenTreeCall* objcHelperCall =
+                m_compiler->gtNewHelperCallNode(CORINFO_HELP_JIT_PINVOKE_OBJC_EXCEPTION_CHECK, TYP_VOID);
+
+            m_compiler->fgMorphTree(objcHelperCall);
+            BlockRange().InsertAfter(helperCall, LIR::SeqTree(m_compiler, objcHelperCall));
+            ContainCheckCallOperands(objcHelperCall);
+        }
+
         return;
     }
 
@@ -7197,6 +7210,18 @@ void Lowering::InsertPInvokeCallEpilog(GenTreeCall* call)
     BlockRange().InsertBefore(insertionPoint, zero, storeCallSiteTracker);
     ContainCheckStoreLoc(storeCallSiteTracker);
 #endif // USE_PER_FRAME_PINVOKE_INIT
+
+    // For the inline P/Invoke path, if the call requires an Objective-C pending exception check,
+    // emit the check after the GC transition back to cooperative mode.
+    if ((call->gtCallMoreFlags & GTF_CALL_M_PINVOKE_OBJC_EXCEPTION) != 0)
+    {
+        GenTreeCall* objcHelperCall =
+            m_compiler->gtNewHelperCallNode(CORINFO_HELP_JIT_PINVOKE_OBJC_EXCEPTION_CHECK, TYP_VOID);
+
+        m_compiler->fgMorphTree(objcHelperCall);
+        BlockRange().InsertBefore(insertionPoint, LIR::SeqTree(m_compiler, objcHelperCall));
+        ContainCheckCallOperands(objcHelperCall);
+    }
 }
 
 //------------------------------------------------------------------------

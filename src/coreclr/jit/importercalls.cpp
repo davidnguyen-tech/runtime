@@ -6868,6 +6868,16 @@ void Compiler::impCheckForPInvokeCall(
         info.compUnmanagedCallCountWithGCTransition++;
     }
 
+    // Check if this P/Invoke requires an Objective-C pending exception check.
+    if (methHnd != nullptr)
+    {
+        unsigned methAttribs = info.compCompHnd->getMethodAttribs(methHnd);
+        if ((methAttribs & CORINFO_FLG_PINVOKE_OBJC_EXCEPTION) != 0)
+        {
+            call->gtCallMoreFlags |= GTF_CALL_M_PINVOKE_OBJC_EXCEPTION;
+        }
+    }
+
     if (unmanagedCallConv == CorInfoCallConvExtension::C ||
         unmanagedCallConv == CorInfoCallConvExtension::CMemberFunction)
     {

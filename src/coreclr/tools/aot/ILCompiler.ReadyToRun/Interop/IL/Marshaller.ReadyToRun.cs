@@ -117,8 +117,10 @@ namespace Internal.TypeSystem.Interop
             if (!flags.PreserveSig)
                 return true;
 
-            if (MarshalHelpers.ShouldCheckForPendingException(targetMethod.Context.Target, metadata))
-                return true;
+            // Note: ShouldCheckForPendingException is intentionally NOT checked here.
+            // The pending exception check does not require marshalling stubs. For JIT-inlined
+            // P/Invokes, the check is handled via CORINFO_HELP_JIT_PINVOKE_OBJC_EXCEPTION_CHECK
+            // helper. For R2R IL stubs, the check is emitted directly by PInvokeILEmitter.
 
             var marshallers = GetMarshallersForMethod(targetMethod);
             for (int i = 0; i < marshallers.Length; i++)
