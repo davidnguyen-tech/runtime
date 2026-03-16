@@ -256,6 +256,7 @@ namespace Internal.ReadyToRunConstants
         GCPoll                      = 0x44,
         ReversePInvokeEnter         = 0x45,
         ReversePInvokeExit          = 0x46,
+        PInvokeObjCExceptionCheck   = 0x47,
 
         // Get string handle lazily
         GetString = 0x50,
