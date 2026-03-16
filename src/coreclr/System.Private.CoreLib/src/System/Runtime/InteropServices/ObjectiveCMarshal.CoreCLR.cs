@@ -1,7 +1,9 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+using System.Diagnostics;
 using System.Runtime.CompilerServices;
+using System.Runtime.ExceptionServices;
 using System.Runtime.Versioning;
 
 namespace System.Runtime.InteropServices.ObjectiveC
@@ -55,6 +57,20 @@ namespace System.Runtime.InteropServices.ObjectiveC
             {
                 *pException = ex;
                 return null;
+            }
+        }
+
+        /// <summary>
+        /// Checks for a pending Objective-C exception and throws it if present.
+        /// Called by JIT-generated code after Objective-C P/Invoke calls.
+        /// </summary>
+        [StackTraceHidden]
+        internal static void ThrowPendingExceptionObject()
+        {
+            Exception? ex = System.StubHelpers.StubHelpers.GetPendingExceptionObject();
+            if (ex is not null)
+            {
+                ExceptionDispatchInfo.Throw(ex);
             }
         }
     }
