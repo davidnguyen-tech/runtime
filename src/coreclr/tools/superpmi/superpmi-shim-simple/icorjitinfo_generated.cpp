@@ -206,6 +206,14 @@ bool interceptor_ICJI::pInvokeMarshalingRequired(
     return original_ICorJitInfo->pInvokeMarshalingRequired(method, callSiteSig);
 }
 
+void interceptor_ICJI::getPInvokeHelpers(
+          CORINFO_METHOD_HANDLE ftn,
+          CorInfoHelpFunc* pBeginHelper,
+          CorInfoHelpFunc* pEndHelper)
+{
+    original_ICorJitInfo->getPInvokeHelpers(ftn, pBeginHelper, pEndHelper);
+}
+
 bool interceptor_ICJI::satisfiesMethodConstraints(
           CORINFO_CLASS_HANDLE parent,
           CORINFO_METHOD_HANDLE method)

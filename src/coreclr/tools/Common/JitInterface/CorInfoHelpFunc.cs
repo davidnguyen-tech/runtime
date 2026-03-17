@@ -257,7 +257,7 @@ namespace Internal.JitInterface
         CORINFO_HELP_JIT_PINVOKE_BEGIN, // Transition to preemptive mode before a P/Invoke, frame is the first argument
         CORINFO_HELP_JIT_PINVOKE_END,   // Transition to cooperative mode after a P/Invoke, frame is the first argument
 
-        CORINFO_HELP_JIT_PINVOKE_OBJC_EXCEPTION_CHECK, // Check for and throw pending Objective-C exception after a P/Invoke
+        CORINFO_HELP_JIT_PINVOKE_END_CHECK_OBJ_EXCEPTION, // Combined: transition to cooperative + check for pending ObjC exception
 
         CORINFO_HELP_JIT_REVERSE_PINVOKE_ENTER, // Transition to cooperative mode in reverse P/Invoke prolog, frame is the first argument
         CORINFO_HELP_JIT_REVERSE_PINVOKE_ENTER_TRACK_TRANSITIONS, // Transition to cooperative mode and track transitions in reverse P/Invoke prolog.

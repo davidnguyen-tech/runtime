@@ -1236,8 +1236,8 @@ namespace Internal.JitInterface
                     id = ReadyToRunHelper.PInvokeEnd;
                     break;
 
-                case CorInfoHelpFunc.CORINFO_HELP_JIT_PINVOKE_OBJC_EXCEPTION_CHECK:
-                    id = ReadyToRunHelper.PInvokeObjCExceptionCheck;
+                case CorInfoHelpFunc.CORINFO_HELP_JIT_PINVOKE_END_CHECK_OBJ_EXCEPTION:
+                    id = ReadyToRunHelper.PInvokeEndObjCExceptionCheck;
                     break;
 
                 case CorInfoHelpFunc.CORINFO_HELP_STACK_PROBE:

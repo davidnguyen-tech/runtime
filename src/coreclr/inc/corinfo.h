@@ -566,7 +566,7 @@ enum CorInfoHelpFunc
     CORINFO_HELP_JIT_PINVOKE_BEGIN, // Transition to preemptive mode before a P/Invoke, frame is the first argument
     CORINFO_HELP_JIT_PINVOKE_END,   // Transition to cooperative mode after a P/Invoke, frame is the first argument
 
-    CORINFO_HELP_JIT_PINVOKE_OBJC_EXCEPTION_CHECK, // Check for and throw pending Objective-C exception after a P/Invoke
+    CORINFO_HELP_JIT_PINVOKE_END_CHECK_OBJ_EXCEPTION, // Combined: transition to cooperative + check for pending ObjC exception
 
     CORINFO_HELP_JIT_REVERSE_PINVOKE_ENTER, // Transition to cooperative mode in reverse P/Invoke prolog, frame is the first argument
     CORINFO_HELP_JIT_REVERSE_PINVOKE_ENTER_TRACK_TRANSITIONS, // Transition to cooperative mode and track transitions in reverse P/Invoke prolog.
@@ -771,7 +771,6 @@ enum CorInfoFlag
     CORINFO_FLG_SHAREDINST            = 0x00020000, // the code for this method is shared between different generic instantiations (also set on classes/types)
     CORINFO_FLG_DELEGATE_INVOKE       = 0x00040000, // "Delegate
     CORINFO_FLG_PINVOKE               = 0x00080000, // Is a P/Invoke call
-    CORINFO_FLG_PINVOKE_OBJC_EXCEPTION = 0x00100000, // P/Invoke requires Objective-C pending exception check
     CORINFO_FLG_NOGCCHECK             = 0x00200000, // This method is FCALL that has no GC check.  Don't put alone in loops
     CORINFO_FLG_INTRINSIC             = 0x00400000, // This method MAY have an intrinsic ID
     CORINFO_FLG_CONSTRUCTOR           = 0x00800000, // This method is an instance or type initializer
@@ -2350,6 +2349,14 @@ public:
     virtual bool pInvokeMarshalingRequired(
             CORINFO_METHOD_HANDLE       method,
             CORINFO_SIG_INFO*           callSiteSig
+            ) = 0;
+
+    // Returns the PInvoke enter/exit helpers to use for the given method.
+    // The exit helper may include additional checks (e.g., Objective-C pending exception).
+    virtual void getPInvokeHelpers(
+            CORINFO_METHOD_HANDLE       ftn,
+            CorInfoHelpFunc*            pBeginHelper,   // OUT
+            CorInfoHelpFunc*            pEndHelper      // OUT
             ) = 0;
 
     // Check constraints on method type arguments (only).

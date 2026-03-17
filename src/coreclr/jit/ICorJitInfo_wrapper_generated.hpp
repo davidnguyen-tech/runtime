@@ -279,6 +279,16 @@ bool WrapICorJitInfo::pInvokeMarshalingRequired(
     return temp;
 }
 
+void WrapICorJitInfo::getPInvokeHelpers(
+          CORINFO_METHOD_HANDLE ftn,
+          CorInfoHelpFunc* pBeginHelper,
+          CorInfoHelpFunc* pEndHelper)
+{
+    API_ENTER(getPInvokeHelpers);
+    wrapHnd->getPInvokeHelpers(ftn, pBeginHelper, pEndHelper);
+    API_LEAVE(getPInvokeHelpers);
+}
+
 bool WrapICorJitInfo::satisfiesMethodConstraints(
           CORINFO_CLASS_HANDLE parent,
           CORINFO_METHOD_HANDLE method)

@@ -47,6 +47,7 @@ namespace Internal.JitInterface
                 s_callbacks.isIntrinsicType = &_isIntrinsicType;
                 s_callbacks.getUnmanagedCallConv = &_getUnmanagedCallConv;
                 s_callbacks.pInvokeMarshalingRequired = &_pInvokeMarshalingRequired;
+                s_callbacks.getPInvokeHelpers = &_getPInvokeHelpers;
                 s_callbacks.satisfiesMethodConstraints = &_satisfiesMethodConstraints;
                 s_callbacks.methodMustBeLoadedBeforeCodeIsRun = &_methodMustBeLoadedBeforeCodeIsRun;
                 s_callbacks.getGSCookie = &_getGSCookie;
@@ -229,6 +230,7 @@ namespace Internal.JitInterface
             public delegate* unmanaged<IntPtr, IntPtr*, CORINFO_CLASS_STRUCT_*, byte> isIntrinsicType;
             public delegate* unmanaged<IntPtr, IntPtr*, CORINFO_METHOD_STRUCT_*, CORINFO_SIG_INFO*, bool*, CorInfoCallConvExtension> getUnmanagedCallConv;
             public delegate* unmanaged<IntPtr, IntPtr*, CORINFO_METHOD_STRUCT_*, CORINFO_SIG_INFO*, byte> pInvokeMarshalingRequired;
+            public delegate* unmanaged<IntPtr, IntPtr*, CORINFO_METHOD_STRUCT_*, CorInfoHelpFunc*, CorInfoHelpFunc*, void> getPInvokeHelpers;
             public delegate* unmanaged<IntPtr, IntPtr*, CORINFO_CLASS_STRUCT_*, CORINFO_METHOD_STRUCT_*, byte> satisfiesMethodConstraints;
             public delegate* unmanaged<IntPtr, IntPtr*, CORINFO_METHOD_STRUCT_*, void> methodMustBeLoadedBeforeCodeIsRun;
             public delegate* unmanaged<IntPtr, IntPtr*, IntPtr*, IntPtr**, void> getGSCookie;
@@ -783,6 +785,20 @@ namespace Internal.JitInterface
             {
                 *ppException = _this.AllocException(ex);
                 return default;
+            }
+        }
+
+        [UnmanagedCallersOnly]
+        private static void _getPInvokeHelpers(IntPtr thisHandle, IntPtr* ppException, CORINFO_METHOD_STRUCT_* ftn, CorInfoHelpFunc* pBeginHelper, CorInfoHelpFunc* pEndHelper)
+        {
+            var _this = GetThis(thisHandle);
+            try
+            {
+                _this.getPInvokeHelpers(ftn, ref *pBeginHelper, ref *pEndHelper);
+            }
+            catch (Exception ex)
+            {
+                *ppException = _this.AllocException(ex);
             }
         }
 

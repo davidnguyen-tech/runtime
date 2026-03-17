@@ -341,6 +341,23 @@ bool interceptor_ICJI::pInvokeMarshalingRequired(CORINFO_METHOD_HANDLE method, C
     return temp;
 }
 
+void interceptor_ICJI::getPInvokeHelpers(CORINFO_METHOD_HANDLE ftn, CorInfoHelpFunc* pBeginHelper, CorInfoHelpFunc* pEndHelper)
+{
+    mc->cr->AddCall("getPInvokeHelpers");
+    CorInfoHelpFunc localBeginHelper = CORINFO_HELP_UNDEF;
+    CorInfoHelpFunc localEndHelper = CORINFO_HELP_UNDEF;
+    original_ICorJitInfo->getPInvokeHelpers(ftn, &localBeginHelper, &localEndHelper);
+    mc->recGetPInvokeHelpers(ftn, &localBeginHelper, &localEndHelper);
+    if (pBeginHelper != nullptr)
+    {
+        *pBeginHelper = localBeginHelper;
+    }
+    if (pEndHelper != nullptr)
+    {
+        *pEndHelper = localEndHelper;
+    }
+}
+
 // Check constraints on method type arguments (only).
 bool interceptor_ICJI::satisfiesMethodConstraints(CORINFO_CLASS_HANDLE  parent, // the exact parent of the method
                                                   CORINFO_METHOD_HANDLE method)

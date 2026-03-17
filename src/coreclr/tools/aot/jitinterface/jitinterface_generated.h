@@ -38,6 +38,7 @@ struct JitInterfaceCallbacks
     bool (* isIntrinsicType)(void * thisHandle, CorInfoExceptionClass** ppException, CORINFO_CLASS_HANDLE classHnd);
     CorInfoCallConvExtension (* getUnmanagedCallConv)(void * thisHandle, CorInfoExceptionClass** ppException, CORINFO_METHOD_HANDLE method, CORINFO_SIG_INFO* callSiteSig, bool* pSuppressGCTransition);
     bool (* pInvokeMarshalingRequired)(void * thisHandle, CorInfoExceptionClass** ppException, CORINFO_METHOD_HANDLE method, CORINFO_SIG_INFO* callSiteSig);
+    void (* getPInvokeHelpers)(void * thisHandle, CorInfoExceptionClass** ppException, CORINFO_METHOD_HANDLE ftn, CorInfoHelpFunc* pBeginHelper, CorInfoHelpFunc* pEndHelper);
     bool (* satisfiesMethodConstraints)(void * thisHandle, CorInfoExceptionClass** ppException, CORINFO_CLASS_HANDLE parent, CORINFO_METHOD_HANDLE method);
     void (* methodMustBeLoadedBeforeCodeIsRun)(void * thisHandle, CorInfoExceptionClass** ppException, CORINFO_METHOD_HANDLE method);
     void (* getGSCookie)(void * thisHandle, CorInfoExceptionClass** ppException, GSCookie* pCookieVal, GSCookie** ppCookieVal);
@@ -471,6 +472,16 @@ public:
     bool temp = _callbacks->pInvokeMarshalingRequired(_thisHandle, &pException, method, callSiteSig);
     if (pException != nullptr) throw pException;
     return temp;
+}
+
+    virtual void getPInvokeHelpers(
+          CORINFO_METHOD_HANDLE ftn,
+          CorInfoHelpFunc* pBeginHelper,
+          CorInfoHelpFunc* pEndHelper)
+{
+    CorInfoExceptionClass* pException = nullptr;
+    _callbacks->getPInvokeHelpers(_thisHandle, &pException, ftn, pBeginHelper, pEndHelper);
+    if (pException != nullptr) throw pException;
 }
 
     virtual bool satisfiesMethodConstraints(

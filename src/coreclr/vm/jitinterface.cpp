@@ -6537,13 +6537,6 @@ DWORD CEEInfo::getMethodAttribsInternal (CORINFO_METHOD_HANDLE ftn)
     if (pMD->IsPInvoke())
     {
         result |= CORINFO_FLG_PINVOKE;
-
-#ifdef FEATURE_OBJCMARSHAL
-        if (Interop::ShouldCheckForPendingException((PInvokeMethodDesc*)pMD))
-        {
-            result |= CORINFO_FLG_PINVOKE_OBJC_EXCEPTION;
-        }
-#endif // FEATURE_OBJCMARSHAL
     }
 
     if (IsMdRequireSecObject(attribs))
@@ -10114,6 +10107,40 @@ bool CEEInfo::pInvokeMarshalingRequired(CORINFO_METHOD_HANDLE method, CORINFO_SI
     EE_TO_JIT_TRANSITION();
 
     return result;
+}
+
+/*********************************************************************/
+void CEEInfo::getPInvokeHelpers(
+    CORINFO_METHOD_HANDLE ftn,
+    CorInfoHelpFunc*      pBeginHelper,
+    CorInfoHelpFunc*      pEndHelper)
+{
+    CONTRACTL {
+        NOTHROW;
+        GC_NOTRIGGER;
+        MODE_PREEMPTIVE;
+    } CONTRACTL_END;
+
+    JIT_TO_EE_TRANSITION_LEAF();
+
+    _ASSERTE(pBeginHelper != NULL);
+    _ASSERTE(pEndHelper != NULL);
+
+    *pBeginHelper = CORINFO_HELP_JIT_PINVOKE_BEGIN;
+    *pEndHelper = CORINFO_HELP_JIT_PINVOKE_END;
+
+#ifdef FEATURE_OBJCMARSHAL
+    if (ftn != NULL)
+    {
+        MethodDesc* pMD = GetMethod(ftn);
+        if (pMD->IsPInvoke() && Interop::ShouldCheckForPendingException((PInvokeMethodDesc*)pMD))
+        {
+            *pEndHelper = CORINFO_HELP_JIT_PINVOKE_END_CHECK_OBJ_EXCEPTION;
+        }
+    }
+#endif // FEATURE_OBJCMARSHAL
+
+    EE_TO_JIT_TRANSITION_LEAF();
 }
 
 /*********************************************************************/

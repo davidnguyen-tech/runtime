@@ -1126,14 +1126,6 @@ namespace Internal.JitInterface
             if (method.IsPInvoke)
             {
                 result |= CorInfoFlag.CORINFO_FLG_PINVOKE;
-
-#if READYTORUN
-                PInvokeMetadata metadata = method.GetPInvokeMethodMetadata();
-                if (MarshalHelpers.ShouldCheckForPendingException(method.Context.Target, metadata))
-                {
-                    result |= CorInfoFlag.CORINFO_FLG_PINVOKE_OBJC_EXCEPTION;
-                }
-#endif
             }
 
 #if READYTORUN
@@ -4744,6 +4736,24 @@ namespace Internal.JitInterface
         private CORINFO_METHOD_STRUCT_* getSpecialCopyHelper(CORINFO_CLASS_STRUCT_* type)
         {
             throw new NotImplementedException("getSpecialCopyHelper");
+        }
+
+        private void getPInvokeHelpers(CORINFO_METHOD_STRUCT_* ftn, ref CorInfoHelpFunc pBeginHelper, ref CorInfoHelpFunc pEndHelper)
+        {
+            pBeginHelper = CorInfoHelpFunc.CORINFO_HELP_JIT_PINVOKE_BEGIN;
+            pEndHelper = CorInfoHelpFunc.CORINFO_HELP_JIT_PINVOKE_END;
+
+#if READYTORUN
+            MethodDesc method = HandleToObject(ftn);
+            if (method.IsPInvoke)
+            {
+                PInvokeMetadata metadata = method.GetPInvokeMethodMetadata();
+                if (MarshalHelpers.ShouldCheckForPendingException(method.Context.Target, metadata))
+                {
+                    pEndHelper = CorInfoHelpFunc.CORINFO_HELP_JIT_PINVOKE_END_CHECK_OBJ_EXCEPTION;
+                }
+            }
+#endif
         }
     }
 }

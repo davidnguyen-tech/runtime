@@ -917,6 +917,10 @@ public:
     void dmpGetWasmTypeSymbol(const Agnostic_GetWasmTypeSymbol& key, DWORDLONG value);
     CORINFO_WASM_TYPE_SYMBOL_HANDLE repGetWasmTypeSymbol(CorInfoWasmType* types, size_t typesSize);
 
+    void recGetPInvokeHelpers(CORINFO_METHOD_HANDLE ftn, CorInfoHelpFunc* pBeginHelper, CorInfoHelpFunc* pEndHelper);
+    void dmpGetPInvokeHelpers(DWORDLONG key, DD value);
+    void repGetPInvokeHelpers(CORINFO_METHOD_HANDLE ftn, CorInfoHelpFunc* pBeginHelper, CorInfoHelpFunc* pEndHelper);
+
     void dmpSigInstHandleMap(DWORD key, DWORDLONG value);
 
     struct Environment
@@ -1222,6 +1226,7 @@ enum mcPackets
     Packet_GetWasmTypeSymbol = 235,
     Packet_GetWasmLowering = 236,
     Packet_GetAsyncOtherVariant = 237,
+    Packet_GetPInvokeHelpers = 238,
 };
 
 void SetDebugDumpVariables();

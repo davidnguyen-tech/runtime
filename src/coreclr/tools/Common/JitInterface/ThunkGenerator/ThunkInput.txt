@@ -113,6 +113,7 @@ AllocMemArgs*, ref AllocMemArgs
 ; Enums
 CorInfoClassId
 CorInfoHelpFunc
+CorInfoHelpFunc*,ref CorInfoHelpFunc
 CorInfoInitClassResult
 CorInfoInlineTypeCheck
 CorInfoInlineTypeCheckSource
@@ -200,6 +201,7 @@ FUNCTIONS
     bool isIntrinsicType(           CORINFO_CLASS_HANDLE        classHnd );
     CorInfoCallConvExtension getUnmanagedCallConv(            CORINFO_METHOD_HANDLE       method,            CORINFO_SIG_INFO*           callSiteSig, bool* pSuppressGCTransition);
     bool pInvokeMarshalingRequired(        CORINFO_METHOD_HANDLE       method,        CORINFO_SIG_INFO*           callSiteSig        );
+    void getPInvokeHelpers(CORINFO_METHOD_HANDLE ftn, CorInfoHelpFunc* pBeginHelper, CorInfoHelpFunc* pEndHelper);
     bool satisfiesMethodConstraints(        CORINFO_CLASS_HANDLE        parent,        CORINFO_METHOD_HANDLE       method        );
     void methodMustBeLoadedBeforeCodeIsRun(        CORINFO_METHOD_HANDLE       method        );
     void getGSCookie(        GSCookie * pCookieVal,        GSCookie ** ppCookieVal        );

@@ -7433,6 +7433,43 @@ void MethodContext::dmpSigInstHandleMap(DWORD key, DWORDLONG value)
     printf("SigInstHandleMap key %u, value %016" PRIX64 "", key, value);
 }
 
+void MethodContext::recGetPInvokeHelpers(CORINFO_METHOD_HANDLE ftn, CorInfoHelpFunc* pBeginHelper, CorInfoHelpFunc* pEndHelper)
+{
+    if (GetPInvokeHelpers == nullptr)
+    {
+        GetPInvokeHelpers = new LightWeightMap<DWORDLONG, DD>();
+    }
+
+    DWORDLONG key = CastHandle(ftn);
+    DD        value;
+    value.A = (DWORD)(pBeginHelper != nullptr ? *pBeginHelper : 0);
+    value.B = (DWORD)(pEndHelper != nullptr ? *pEndHelper : 0);
+
+    GetPInvokeHelpers->Add(key, value);
+    DEBUG_REC(dmpGetPInvokeHelpers(key, value));
+}
+
+void MethodContext::dmpGetPInvokeHelpers(DWORDLONG key, DD value)
+{
+    printf("GetPInvokeHelpers ftn-%016" PRIX64 ", beginHelper-%u, endHelper-%u", key, value.A, value.B);
+}
+
+void MethodContext::repGetPInvokeHelpers(CORINFO_METHOD_HANDLE ftn, CorInfoHelpFunc* pBeginHelper, CorInfoHelpFunc* pEndHelper)
+{
+    DWORDLONG key = CastHandle(ftn);
+    DD        value = LookupByKeyOrMiss(GetPInvokeHelpers, key, ": key %016" PRIX64 "", key);
+    DEBUG_REP(dmpGetPInvokeHelpers(key, value));
+
+    if (pBeginHelper != nullptr)
+    {
+        *pBeginHelper = (CorInfoHelpFunc)value.A;
+    }
+    if (pEndHelper != nullptr)
+    {
+        *pEndHelper = (CorInfoHelpFunc)value.B;
+    }
+}
+
 int MethodContext::dumpMethodIdentityInfoToBuffer(char* buff, int len, bool ignoreMethodName /* = false */, CORINFO_METHOD_INFO* optInfo /* = nullptr */, unsigned optFlags /* = 0 */)
 {
     if (len < METHOD_IDENTITY_INFO_SIZE)

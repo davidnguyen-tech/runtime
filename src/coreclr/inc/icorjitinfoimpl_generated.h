@@ -134,6 +134,11 @@ bool pInvokeMarshalingRequired(
           CORINFO_METHOD_HANDLE method,
           CORINFO_SIG_INFO* callSiteSig) override;
 
+void getPInvokeHelpers(
+          CORINFO_METHOD_HANDLE ftn,
+          CorInfoHelpFunc* pBeginHelper,
+          CorInfoHelpFunc* pEndHelper) override;
+
 bool satisfiesMethodConstraints(
           CORINFO_CLASS_HANDLE parent,
           CORINFO_METHOD_HANDLE method) override;

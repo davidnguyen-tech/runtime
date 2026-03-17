@@ -283,6 +283,12 @@ bool MyICJI::pInvokeMarshalingRequired(CORINFO_METHOD_HANDLE method, CORINFO_SIG
     return jitInstance->mc->repPInvokeMarshalingRequired(method, callSiteSig);
 }
 
+void MyICJI::getPInvokeHelpers(CORINFO_METHOD_HANDLE ftn, CorInfoHelpFunc* pBeginHelper, CorInfoHelpFunc* pEndHelper)
+{
+    jitInstance->mc->cr->AddCall("getPInvokeHelpers");
+    jitInstance->mc->repGetPInvokeHelpers(ftn, pBeginHelper, pEndHelper);
+}
+
 // Check constraints on method type arguments (only).
 bool MyICJI::satisfiesMethodConstraints(CORINFO_CLASS_HANDLE  parent, // the exact parent of the method
                                         CORINFO_METHOD_HANDLE method)
