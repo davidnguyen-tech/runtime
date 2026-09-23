@@ -11,10 +11,6 @@ parameters:
     type: string
     default: ''
 
-  - name: runtimePackageFeed
-    type: string
-    default: 'https://pkgs.dev.azure.com/dnceng/public/_packaging/dotnet-experimental/nuget/v3/index.json'
-
   - name: runtimePackageRid
     type: string
     default: linux-x64
@@ -135,52 +131,11 @@ extends:
             runtimeRepoAlias: self
             performanceRepoAlias: performance
             runtimePackageMode: true
-            viperMicro:
-              enabled: true
-              configs:
-              - ${{ parameters.runtimePackagePlatform }}
-            viperMicroRuntimeAsync:
-              enabled: false
-              configs: []
-            cobaltMicroRuntimeAsync:
-              enabled: false
-              configs: []
-            monoMicro:
-              enabled: false
-              configs: []
-            monoInterpreter:
-              enabled: false
-              configs: []
-            monoAot:
-              enabled: false
-              configs: []
-            androidCoreclrJit:
-              enabled: false
-            cobaltMicro:
-              enabled: false
-              configs: []
-            cobaltSveMicro:
-              enabled: false
-              configs: []
-            cobaltMicroR2RInterpreter:
-              enabled: false
-              configs: []
-            androidCoreclrR2r:
-              enabled: false
-            jobParameters:
-              runtimePackageMode: true
-              runEnvVars:
-              - PERFLAB_RUNTIME_PACKAGE_VERSION=${{ parameters.runtimePackageVersion }}
-              - PERFLAB_RUNTIME_PACKAGE_RID=${{ parameters.runtimePackageRid }}
-              - PERFLAB_RUNTIME_PACKAGE_SUITE=standard
-              - PERFLAB_RUNTIME_PACKAGE_GC=workstation
-              - PERFLAB_REPO=dotnet/runtimelab
-              - PERFLAB_BRANCH=${{ parameters.runtimePackageSourceBranch }}
-              - PERFLAB_HASH=${{ parameters.runtimePackageSourceCommit }}
-              - PERFLAB_RUNNAME=gc-runtime-package-$(Build.BuildId)-$(System.JobAttempt)
-              - RUNTIME_PACKAGE_BUILD_ID=${{ parameters.runtimePackageProducerBuildId }}
-              - RUNTIME_PACKAGE_COMMIT=${{ parameters.runtimePackageSourceCommit }}
-              - RUNTIME_PACKAGE_FEED=${{ parameters.runtimePackageFeed }}
-              - RUNTIME_PACKAGE_ID=Microsoft.NETCore.App.Runtime.${{ parameters.runtimePackageRid }}
-              - RUNTIME_PACKAGE_RID=${{ parameters.runtimePackageRid }}
-              - RUNTIME_PACKAGE_SHA512=${{ parameters.runtimePackageSha512 }}
+            runtimePackage:
+              version: ${{ parameters.runtimePackageVersion }}
+              rid: ${{ parameters.runtimePackageRid }}
+              sha512: ${{ parameters.runtimePackageSha512 }}
+              sourceCommit: ${{ parameters.runtimePackageSourceCommit }}
+              sourceBranch: ${{ parameters.runtimePackageSourceBranch }}
+              producerBuildId: ${{ parameters.runtimePackageProducerBuildId }}
+              platform: ${{ parameters.runtimePackagePlatform }}

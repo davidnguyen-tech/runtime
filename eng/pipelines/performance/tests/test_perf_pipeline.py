@@ -9,7 +9,6 @@ PIPELINE = ROOT / "eng" / "pipelines" / "performance" / "perf.yml"
 EXPERIMENT_PARAMETERS = {
     "runtimePackageMode": "false",
     "runtimePackageVersion": "''",
-    "runtimePackageFeed": "'https://pkgs.dev.azure.com/dnceng/public/_packaging/dotnet-experimental/nuget/v3/index.json'",
     "runtimePackageRid": "linux-x64",
     "runtimePackageSha512": "''",
     "runtimePackageSourceCommit": "''",
@@ -18,34 +17,14 @@ EXPERIMENT_PARAMETERS = {
     "runtimePackagePlatform": "linux_x64",
 }
 
-DISABLED_RUNTIME_TOGGLES = (
-    "viperMicroRuntimeAsync",
-    "cobaltMicroRuntimeAsync",
-    "monoMicro",
-    "monoInterpreter",
-    "monoAot",
-    "androidCoreclrJit",
-    "cobaltMicro",
-    "cobaltSveMicro",
-    "cobaltMicroR2RInterpreter",
-    "androidCoreclrR2r",
-)
-
-RUNTIME_PACKAGE_ENVIRONMENT = (
-    "PERFLAB_RUNTIME_PACKAGE_VERSION",
-    "PERFLAB_RUNTIME_PACKAGE_RID",
-    "PERFLAB_RUNTIME_PACKAGE_SUITE",
-    "PERFLAB_RUNTIME_PACKAGE_GC",
-    "PERFLAB_REPO",
-    "PERFLAB_BRANCH",
-    "PERFLAB_HASH",
-    "PERFLAB_RUNNAME",
-    "RUNTIME_PACKAGE_BUILD_ID",
-    "RUNTIME_PACKAGE_COMMIT",
-    "RUNTIME_PACKAGE_FEED",
-    "RUNTIME_PACKAGE_ID",
-    "RUNTIME_PACKAGE_RID",
-    "RUNTIME_PACKAGE_SHA512",
+RUNTIME_PACKAGE_FIELDS = (
+    ("version", "runtimePackageVersion"),
+    ("rid", "runtimePackageRid"),
+    ("sha512", "runtimePackageSha512"),
+    ("sourceCommit", "runtimePackageSourceCommit"),
+    ("sourceBranch", "runtimePackageSourceBranch"),
+    ("producerBuildId", "runtimePackageProducerBuildId"),
+    ("platform", "runtimePackagePlatform"),
 )
 
 
@@ -100,36 +79,25 @@ class PerfPipelineTests(unittest.TestCase):
 
     def test_candidate_is_one_ordinary_linux_x64_viper_lane(self):
         self.assertNotIn("runtime-wasm-perf-jobs.yml", self.candidate)
-        self.assertEqual(2, self.candidate.count("runtimePackageMode: true"))
-        self.assertIn(
-            "viperMicro:\n"
-            "              enabled: true\n"
-            "              configs:\n"
-            "              - ${{ parameters.runtimePackagePlatform }}",
-            self.candidate,
-        )
-        for toggle in DISABLED_RUNTIME_TOGGLES:
-            with self.subTest(toggle=toggle):
-                self.assertRegex(
-                    self.candidate,
-                    rf"            {toggle}:\n              enabled: false",
-                )
+        self.assertEqual(1, self.candidate.count("runtimePackageMode: true"))
+        self.assertNotIn("viperMicro:", self.candidate)
+        self.assertNotIn("monoMicro:", self.candidate)
+        self.assertNotIn("androidCoreclrJit:", self.candidate)
         self.assertNotIn("additionalJobIdentifier:", self.candidate)
         self.assertNotIn("experimentName:", self.candidate)
 
-    def test_candidate_forwards_only_reviewed_package_environment(self):
+    def test_candidate_forwards_only_structured_package_identity(self):
         self.assertIn("runtimePackageMode: true", self.candidate)
-        environment_match = re.search(
-            r"              runEnvVars:\n"
-            r"(?P<entries>(?:              - [A-Z0-9_]+=.*\n)+)",
-            self.candidate,
-        )
-        self.assertIsNotNone(environment_match)
-        names = tuple(
-            line.strip()[2:].split("=", 1)[0]
-            for line in environment_match.group("entries").splitlines()
-        )
-        self.assertEqual(RUNTIME_PACKAGE_ENVIRONMENT, names)
+        self.assertIn("runtimePackage:", self.candidate)
+        for field, parameter in RUNTIME_PACKAGE_FIELDS:
+            with self.subTest(field=field):
+                self.assertIn(
+                    f"{field}: ${{{{ parameters.{parameter} }}}}",
+                    self.candidate,
+                )
+        self.assertNotIn("runEnvVars:", self.candidate)
+        self.assertNotIn("jobParameters:", self.candidate)
+        self.assertNotIn("runtimePackageFeed", self.text)
         self.assertNotRegex(self.text, r"name: runtimePackage(?:Environment|Env|RunEnvVars)")
 
     def test_feature_branch_pins_matching_performance_contract(self):
