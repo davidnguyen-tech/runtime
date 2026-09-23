@@ -3,6 +3,46 @@ parameters:
     type: boolean
     default: false
 
+  - name: runtimePackageMode
+    type: boolean
+    default: false
+
+  - name: runtimePackageVersion
+    type: string
+    default: ''
+
+  - name: runtimePackageFeed
+    type: string
+    default: 'https://pkgs.dev.azure.com/dnceng/public/_packaging/dotnet-experimental/nuget/v3/index.json'
+
+  - name: runtimePackageRid
+    type: string
+    default: linux-x64
+    values:
+    - linux-x64
+
+  - name: runtimePackageSha512
+    type: string
+    default: ''
+
+  - name: runtimePackageSourceCommit
+    type: string
+    default: ''
+
+  - name: runtimePackageSourceBranch
+    type: string
+    default: ''
+
+  - name: runtimePackageProducerBuildId
+    type: string
+    default: ''
+
+  - name: runtimePackagePlatform
+    type: string
+    default: linux_x64
+    values:
+    - linux_x64
+
 trigger:
   batch: true
   branches:
@@ -26,6 +66,8 @@ resources:
     - repository: performance
       type: git
       name: internal/dotnet-performance
+      # Restore the merged/default performance ref before merging this runtime branch.
+      ref: refs/heads/davidnguyen-tech-consume-runtimelab-gc-experiment
 
 variables:
 - template: /eng/pipelines/common/variables.yml
@@ -65,19 +107,20 @@ extends:
             timeoutInMinutes: 540
             allowNoHelixJobs: true
 
-      - template: /eng/pipelines/runtime-wasm-perf-jobs.yml@performance
-        parameters:
-          #${{ and(ne(variables['System.TeamProject'], 'public'), in(variables['Build.Reason'], 'Schedule')) }}:
-          #  runProfile: 'non-v8'
-          ${{ if eq(variables['System.TeamProject'], 'internal') }}:
-            runProfile: 'v8'
-          runtimeRepoAlias: self
-          performanceRepoAlias: performance
-          jobParameters:
-            ${{ if parameters.onlySanityCheck }}:
-              onlySanityCheck: true
+      - ${{ if eq(parameters.runtimePackageMode, false) }}:
+        - template: /eng/pipelines/runtime-wasm-perf-jobs.yml@performance
+          parameters:
+            #${{ and(ne(variables['System.TeamProject'], 'public'), in(variables['Build.Reason'], 'Schedule')) }}:
+            #  runProfile: 'non-v8'
+            ${{ if eq(variables['System.TeamProject'], 'internal') }}:
+              runProfile: 'v8'
+            runtimeRepoAlias: self
+            performanceRepoAlias: performance
+            jobParameters:
+              ${{ if parameters.onlySanityCheck }}:
+                onlySanityCheck: true
 
-      - ${{ if and(ne(variables['System.TeamProject'], 'public'), notin(variables['Build.Reason'], 'Schedule')) }}:
+      - ${{ if and(eq(parameters.runtimePackageMode, false), ne(variables['System.TeamProject'], 'public'), notin(variables['Build.Reason'], 'Schedule')) }}:
         - template: /eng/pipelines/runtime-perf-jobs.yml@performance
           parameters:
             runtimeRepoAlias: self
@@ -85,3 +128,59 @@ extends:
             jobParameters:
               ${{ if parameters.onlySanityCheck }}:
                 onlySanityCheck: true
+
+      - ${{ if and(eq(parameters.runtimePackageMode, true), ne(variables['System.TeamProject'], 'public')) }}:
+        - template: /eng/pipelines/runtime-perf-jobs.yml@performance
+          parameters:
+            runtimeRepoAlias: self
+            performanceRepoAlias: performance
+            runtimePackageMode: true
+            viperMicro:
+              enabled: true
+              configs:
+              - ${{ parameters.runtimePackagePlatform }}
+            viperMicroRuntimeAsync:
+              enabled: false
+              configs: []
+            cobaltMicroRuntimeAsync:
+              enabled: false
+              configs: []
+            monoMicro:
+              enabled: false
+              configs: []
+            monoInterpreter:
+              enabled: false
+              configs: []
+            monoAot:
+              enabled: false
+              configs: []
+            androidCoreclrJit:
+              enabled: false
+            cobaltMicro:
+              enabled: false
+              configs: []
+            cobaltSveMicro:
+              enabled: false
+              configs: []
+            cobaltMicroR2RInterpreter:
+              enabled: false
+              configs: []
+            androidCoreclrR2r:
+              enabled: false
+            jobParameters:
+              runtimePackageMode: true
+              runEnvVars:
+              - PERFLAB_RUNTIME_PACKAGE_VERSION=${{ parameters.runtimePackageVersion }}
+              - PERFLAB_RUNTIME_PACKAGE_RID=${{ parameters.runtimePackageRid }}
+              - PERFLAB_RUNTIME_PACKAGE_SUITE=standard
+              - PERFLAB_RUNTIME_PACKAGE_GC=workstation
+              - PERFLAB_REPO=dotnet/runtimelab
+              - PERFLAB_BRANCH=${{ parameters.runtimePackageSourceBranch }}
+              - PERFLAB_HASH=${{ parameters.runtimePackageSourceCommit }}
+              - PERFLAB_RUNNAME=gc-runtime-package-$(Build.BuildId)-$(System.JobAttempt)
+              - RUNTIME_PACKAGE_BUILD_ID=${{ parameters.runtimePackageProducerBuildId }}
+              - RUNTIME_PACKAGE_COMMIT=${{ parameters.runtimePackageSourceCommit }}
+              - RUNTIME_PACKAGE_FEED=${{ parameters.runtimePackageFeed }}
+              - RUNTIME_PACKAGE_ID=Microsoft.NETCore.App.Runtime.${{ parameters.runtimePackageRid }}
+              - RUNTIME_PACKAGE_RID=${{ parameters.runtimePackageRid }}
+              - RUNTIME_PACKAGE_SHA512=${{ parameters.runtimePackageSha512 }}
