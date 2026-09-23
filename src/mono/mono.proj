@@ -123,6 +123,8 @@
 
   <!-- Sanity checks -->
   <Target Name="CheckEnv">
+    <Error Condition="'$(MonoAndroidStartupBuildId)' != '' and !$([System.Text.RegularExpressions.Regex]::IsMatch('$(MonoAndroidStartupBuildId)', '\A[a-z0-9][a-z0-9._-]{0,63}\z'))"
+           Text="MonoAndroidStartupBuildId must be a bounded lowercase producer marker." />
     <Error Condition="'$(TargetstvOSSimulator)' != 'true' and '$(TargetstvOS)' == 'true' and '$(Platform)' != 'arm64'" Text="Error: Invalid platform for $(TargetOS): $(Platform)." />
     <Error Condition="'$(TargetstvOSSimulator)' == 'true' and '$(TargetstvOS)' == 'true' and '$(Platform)' != 'x64' and '$(Platform)' != 'arm64'" Text="Error: Invalid platform for $(TargetOS): $(Platform)." />
     <Error Condition="'$(TargetsiOSSimulator)' != 'true' and '$(TargetsiOS)' == 'true' and '$(Platform)' != 'arm64'" Text="Error: Invalid platform for $(TargetOS): $(Platform)." />
@@ -641,6 +643,8 @@ JS_ENGINES = [NODE_JS]
       <_MonoCMakeArgs Condition="'$(Platform)' == 'x64'" Include="-DANDROID_ABI=x86_64" />
       <_MonoCMakeArgs Condition="'$(Configuration)' != 'Debug'" Include="-DENABLE_MINIMAL=ssa,logging" />
       <_MonoCMakeArgs Condition="'$(Configuration)' == 'Debug'" Include="-DENABLE_MINIMAL=ssa" />
+      <!-- Always pass the value so removing the opt-in invalidates the configure command and clears the CMake cache. -->
+      <_MonoCMakeArgs Condition="'$(TargetsAndroid)' == 'true'" Include="-DMONO_ANDROID_STARTUP_BUILD_ID=$(MonoAndroidStartupBuildId)" />
 
       <_MonoCFLAGS Condition="'$(Platform)' == 'arm'" Include="-march=armv7-a" />
       <_MonoCFLAGS Condition="'$(Platform)' == 'arm'" Include="-mtune=cortex-a8" />

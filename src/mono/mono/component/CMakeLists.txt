@@ -50,6 +50,34 @@ set(${MONO_DEBUGGER_COMPONENT_NAME}-stub-sources
   ${MONO_COMPONENT_PATH}/debugger-stub.c
   )
 
+set(MONO_ANDROID_STARTUP_BUILD_ID "" CACHE STRING "Opt-in Android startup metadata producer marker")
+if(HOST_ANDROID AND NOT MONO_ANDROID_STARTUP_BUILD_ID STREQUAL "")
+  if(NOT MONO_ANDROID_STARTUP_BUILD_ID MATCHES "^[a-z0-9][a-z0-9._-]*$")
+    message(FATAL_ERROR "Invalid Android startup metadata producer marker")
+  endif()
+  string(LENGTH "${MONO_ANDROID_STARTUP_BUILD_ID}" startup_marker_length)
+  if(startup_marker_length GREATER 64)
+    message(FATAL_ERROR "Android startup metadata producer marker exceeds 64 bytes")
+  endif()
+  list(APPEND ${MONO_DEBUGGER_COMPONENT_NAME}-sources
+    ${MONO_COMPONENT_PATH}/debugger-startup.c
+    ${MONO_COMPONENT_PATH}/debugger-startup-state.c)
+endif()
+
+option(MONO_DEBUGGER_STARTUP_TESTS "Build the startup metadata recorder host tests" OFF)
+if(MONO_DEBUGGER_STARTUP_TESTS)
+  add_executable(mono-debugger-startup-tests
+    ${MONO_COMPONENT_PATH}/debugger-startup-tests.c
+    ${MONO_COMPONENT_PATH}/debugger-startup-wrapper-tests.c
+    ${MONO_COMPONENT_PATH}/debugger-startup-state.c)
+  target_link_libraries(mono-debugger-startup-tests PRIVATE monoapi eglib_api)
+  if(MSVC)
+    target_compile_options(mono-debugger-startup-tests PRIVATE /UNDEBUG)
+  else()
+    target_compile_options(mono-debugger-startup-tests PRIVATE -UNDEBUG)
+  endif()
+endif()
+
 # hot_reload
 list(APPEND components
   ${MONO_HOT_RELOAD_COMPONENT_NAME}
@@ -159,6 +187,9 @@ endif()
 foreach(component IN LISTS components)
   if(NOT DISABLE_COMPONENT_OBJECTS)
     add_library("${component}-objects" OBJECT "${${component}-sources}")
+    if(component STREQUAL MONO_DEBUGGER_COMPONENT_NAME AND HOST_ANDROID AND NOT MONO_ANDROID_STARTUP_BUILD_ID STREQUAL "")
+      target_compile_definitions("${component}-objects" PRIVATE MONO_ANDROID_STARTUP_BUILD_ID="${MONO_ANDROID_STARTUP_BUILD_ID}")
+    endif()
     target_link_libraries("${component}-objects" PRIVATE component_base)
     target_link_libraries("${component}-objects" PUBLIC eglib_api)
     foreach(dependency IN LISTS "${component}-dependencies")

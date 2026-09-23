@@ -90,6 +90,7 @@
 #include <mono/component/debugger-agent.h>
 #include <mono/component/debugger-networking.h>
 #include <mono/component/debugger-poll.h>
+#include <mono/component/debugger-startup.h>
 #include <mono/mini/mini.h>
 #include <mono/mini/seq-points.h>
 #include <mono/mini/aot-runtime.h>
@@ -762,8 +763,13 @@ mono_debugger_is_disconnected (void)
 void
 mono_debugger_agent_init_internal (void)
 {
-	if (!agent_config.enabled)
+	mono_debugger_startup_init ();
+	mono_debugger_startup_component (MS_BEGIN, agent_config.enabled);
+	mono_debugger_startup_config (agent_config.enabled, agent_config.server, agent_config.suspend, agent_config.defer);
+	if (!agent_config.enabled) {
+		mono_debugger_startup_component (MS_END, FALSE);
 		return;
+	}
 
 	DebuggerEngineCallbacks cbs;
 	memset (&cbs, 0, sizeof (cbs));
@@ -833,6 +839,7 @@ mono_debugger_agent_init_internal (void)
 
 	if (!agent_config.onuncaught && !agent_config.onthrow)
 		finish_agent_init (TRUE);
+	mono_debugger_startup_component (MS_END, TRUE);
 }
 
 /*
@@ -845,8 +852,11 @@ mono_debugger_agent_init_internal (void)
 static void
 finish_agent_init (gboolean on_startup)
 {
-	if (mono_atomic_cas_i32 (&agent_inited, 1, 0) == 1)
+	mono_debugger_startup_finish (MS_BEGIN, on_startup, FALSE);
+	if (mono_atomic_cas_i32 (&agent_inited, 1, 0) == 1) {
+		mono_debugger_startup_finish (MS_END, on_startup, TRUE);
 		return;
+	}
 
 	transport_connect (agent_config.address);
 
@@ -857,6 +867,7 @@ finish_agent_init (gboolean on_startup)
 		start_debugger_thread_func (error);
 		mono_error_assert_ok (error);
 	}
+	mono_debugger_startup_finish (MS_END, on_startup, FALSE);
 }
 
 static void
@@ -972,7 +983,7 @@ set_keepalive (void)
 	tv.tv_sec = agent_config.keepalive / 1000;
 	tv.tv_usec = (agent_config.keepalive % 1000) * 1000;
 
-	result = setsockopt (conn_fd, SOL_SOCKET, SO_RCVTIMEO, (char *) &tv, sizeof(struct timeval));
+	result = mono_debugger_startup_setsockopt (conn_fd, SOL_SOCKET, SO_RCVTIMEO, (char *) &tv, sizeof(struct timeval), MS_RCVTIMEO);
 	g_assert (result >= 0);
 #endif // HOST_WASI
 }
@@ -981,7 +992,7 @@ static SOCKET
 socket_transport_accept (SOCKET socket_fd)
 {
 	MONO_REQ_GC_SAFE_MODE;
-	conn_fd = accept (socket_fd, NULL, NULL);
+	conn_fd = mono_debugger_startup_accept (socket_fd);
 
 	if (conn_fd == INVALID_SOCKET) {
 		PRINT_ERROR_MSG ("debugger-agent: Unable to listen on %d: %s.\n", (int)socket_fd, strerror (get_last_sock_error()));
@@ -1073,14 +1084,14 @@ socket_transport_connect (const char *address)
 			socklen_t addrlen;
 
 			/* No address, generate one */
-			sfd = socket (AF_INET, SOCK_STREAM, 0);
+			sfd = mono_debugger_startup_socket (AF_INET, SOCK_STREAM, 0, MS_LISTENER, -1);
 			if (sfd == INVALID_SOCKET) {
 				PRINT_ERROR_MSG ("debugger-agent: Unable to create a socket: %s\n", strerror (get_last_sock_error ()));
 				exit (1);
 			}
 
 			/* This will bind the socket to a random port */
-			res = listen (sfd, 16);
+			res = mono_debugger_startup_listen (sfd, 16);
 			if (res == SOCKET_ERROR) {
 				PRINT_ERROR_MSG ("debugger-agent: Unable to setup listening socket: %s\n", strerror (get_last_sock_error ()));
 				exit (1);
@@ -1089,7 +1100,7 @@ socket_transport_connect (const char *address)
 
 			addrlen = sizeof (addr);
 			memset (&addr, 0, sizeof (addr));
-			res = getsockname (sfd, (struct sockaddr*)&addr, &addrlen);
+			res = mono_debugger_startup_getsockname (sfd, (struct sockaddr*)&addr, &addrlen);
 			g_assert (res == 0);
 
 			host = (char*)"127.0.0.1";
@@ -1109,18 +1120,18 @@ socket_transport_connect (const char *address)
 				mono_debugger_socket_address_init (&sockaddr, &sock_len, rp->family, &rp->address, port);
 				MONO_EXIT_GC_UNSAFE;
 
-				sfd = socket (rp->family, rp->socktype, rp->protocol);
+				sfd = mono_debugger_startup_socket (rp->family, rp->socktype, rp->protocol, MS_LISTENER, port);
 				if (sfd == INVALID_SOCKET)
 					continue;
 
-				if (setsockopt (sfd, SOL_SOCKET, SO_REUSEADDR, (const char*)&n, sizeof(n)) == SOCKET_ERROR)
+				if (mono_debugger_startup_setsockopt (sfd, SOL_SOCKET, SO_REUSEADDR, (const char*)&n, sizeof(n), MS_REUSEADDR) == SOCKET_ERROR)
 					continue;
 
-				res = bind (sfd, &sockaddr.addr, sock_len);
+				res = mono_debugger_startup_bind (sfd, &sockaddr.addr, sock_len);
 				if (res == SOCKET_ERROR)
 					continue;
 
-				res = listen (sfd, 16);
+				res = mono_debugger_startup_listen (sfd, 16);
 				if (res == SOCKET_ERROR)
 					continue;
 				listen_fd = sfd;
@@ -1141,7 +1152,7 @@ socket_transport_connect (const char *address)
 			mono_pollfd mp;
 			mp.fd = (int)sfd;
 			mp.events = MONO_POLLIN;
-			res = mono_poll (&mp, 1, agent_config.timeout);
+			res = mono_debugger_startup_poll (&mp, 1, agent_config.timeout);
 			if (res == 0) {
 				PRINT_ERROR_MSG ("debugger-agent: Timed out waiting to connect.\n");
 				exit (1);
@@ -1168,8 +1179,8 @@ socket_transport_connect (const char *address)
 				mono_debugger_socket_address_init (&sockaddr, &sock_len, rp->family, &rp->address, port);
 				MONO_EXIT_GC_UNSAFE;
 
-				sfd = socket (rp->family, rp->socktype,
-							rp->protocol);
+				sfd = mono_debugger_startup_socket (rp->family, rp->socktype,
+							rp->protocol, MS_CLIENT, port);
 				if (sfd == INVALID_SOCKET) {
 					perror("socket");
 					fprintf(stderr, "socket() failed: %s\n", strerror(errno));
@@ -1182,10 +1193,10 @@ socket_transport_connect (const char *address)
 					struct timeval timeout;
 					timeout.tv_sec  = 5;
 					timeout.tv_usec = 0;
-					setsockopt(sfd, SOL_SOCKET, SO_SNDTIMEO, (const char *)&timeout, sizeof(timeout));
+					mono_debugger_startup_setsockopt (sfd, SOL_SOCKET, SO_SNDTIMEO, (const char *)&timeout, sizeof(timeout), MS_SNDTIMEO);
 				}
 
-				res = connect (sfd, &sockaddr.addr, sock_len);
+				res = mono_debugger_startup_connect (sfd, &sockaddr.addr, sock_len);
 
 				if (res != SOCKET_ERROR)
 					break;       /* Success */
@@ -1193,7 +1204,7 @@ socket_transport_connect (const char *address)
 	#ifdef HOST_WIN32
 				closesocket (sfd);
 	#else
-				close (sfd);
+				mono_debugger_startup_close (sfd);
 	#endif
 			}
 			elapsedTime = GDOUBLE_TO_UINT32 (difftime (time (NULL), startTime) * 1000);
@@ -1234,9 +1245,9 @@ socket_transport_close1 (void)
 	shutdown (listen_fd, SD_BOTH);
 	closesocket (listen_fd);
 #else
-	shutdown (conn_fd, SHUT_RD);
-	shutdown (listen_fd, SHUT_RDWR);
-	close (listen_fd);
+	mono_debugger_startup_shutdown (conn_fd, SHUT_RD);
+	mono_debugger_startup_shutdown (listen_fd, SHUT_RDWR);
+	mono_debugger_startup_close (listen_fd);
 #endif
 }
 
@@ -1246,7 +1257,7 @@ socket_transport_close2 (void)
 #ifdef HOST_WIN32
 	shutdown (conn_fd, SD_BOTH);
 #else
-	shutdown (conn_fd, SHUT_RDWR);
+	mono_debugger_startup_shutdown (conn_fd, SHUT_RDWR);
 #endif
 }
 
@@ -1288,6 +1299,7 @@ socket_fd_transport_connect (const char *address)
 		exit (1);
 	}
 
+	mono_debugger_startup_inherited (conn_fd);
 	gboolean handshake_ok;
 	MONO_ENTER_GC_UNSAFE;
 	handshake_ok = transport_handshake ();
@@ -1346,6 +1358,7 @@ transport_init (void)
 		exit (1);
 	}
 	transport = &transports [i];
+	mono_debugger_startup_transport (!strcmp (transport->name, "dt_socket") ? 1 : !strcmp (transport->name, "socket-fd") ? 2 : 0);
 }
 
 void
@@ -1411,6 +1424,7 @@ transport_handshake (void)
 
 	MONO_REQ_GC_UNSAFE_MODE;
 
+	mono_debugger_startup_handshake (MS_BEGIN, conn_fd, 0);
 	disconnected = TRUE;
 
 	/* Write handshake message */
@@ -1425,6 +1439,7 @@ transport_handshake (void)
 	/* Read answer */
 	res = transport_recv (buf, (int)strlen (handshake_msg));
 	if ((res != strlen (handshake_msg)) || (memcmp (buf, handshake_msg, strlen (handshake_msg)) != 0)) {
+		mono_debugger_startup_handshake (MS_END, conn_fd, 0);
 		PRINT_ERROR_MSG ("debugger-agent: DWP handshake failed.\n");
 		return FALSE;
 	}
@@ -1448,11 +1463,11 @@ transport_handshake (void)
 	MONO_ENTER_GC_SAFE;
 	if (conn_fd) {
 		int flag = 1;
-		int result = setsockopt (conn_fd,
+		int result = mono_debugger_startup_setsockopt (conn_fd,
                                  IPPROTO_TCP,
                                  TCP_NODELAY,
                                  (char *) &flag,
-                                 sizeof(int));
+                                 sizeof(int), MS_NODELAY);
 		g_assert (result >= 0);
 	}
 
@@ -1462,6 +1477,7 @@ transport_handshake (void)
 #endif // DISABLE_SOCKET_TRANSPORT
 
 	disconnected = FALSE;
+	mono_debugger_startup_handshake (MS_END, conn_fd, TRUE);
 	return TRUE;
 }
 
