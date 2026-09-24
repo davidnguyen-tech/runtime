@@ -50,9 +50,7 @@
               "demands": "ImageOverride -equals build.azurelinux.3.amd64",
               "os": "linux"
             },
-            "container": {
-              "image": "mcr.microsoft.com/dotnet-buildtools/prereqs@sha256:62d9af8ee1655023cc103457f52e4679efbe1d81392d8668147e91a931082b3d"
-            },
+            "container": "android",
             "preSteps": [
               { "checkout": "self", "path": "s", "clean": true, "fetchDepth": 0, "persistCredentials": false },
               { "checkout": "1ESPipelineTemplates", "path": "startup-templates", "fetchDepth": 1, "persistCredentials": false }

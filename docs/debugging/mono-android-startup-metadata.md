@@ -161,7 +161,10 @@ default-off root's resource behavior is not changed.
 
 `MonoStartupMetadata` contains `ValidateInputs`, `BuildRuntimePacks`, and
 `TestSignRuntimePacks`, in dependency order. The normal official job wrapper
-and branch-selected internal pool are used throughout. The Linux job uses
+and branch-selected internal pool are used throughout. The Linux job selects
+the existing named `android` container. Only the enabled official diagnostic
+path pins that resource in `pipeline-with-resources.yml`; ordinary official
+and public mappings retain their existing image tag. The diagnostic image is
 `mcr.microsoft.com/dotnet-buildtools/prereqs@sha256:62d9af8ee1655023cc103457f52e4679efbe1d81392d8668147e91a931082b3d`,
 with expected NDK `27.2.12479018`. Its preprovisioned SDK/JDK/NDK are a **new
 explicit toolchain baseline**, not historical binary equivalence. Actual

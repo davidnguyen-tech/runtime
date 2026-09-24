@@ -4,6 +4,9 @@ parameters:
   - name: isOfficialBuild
     type: boolean
     default: false
+  - name: enableMonoStartupMetadata
+    type: boolean
+    default: false
 
 extends:
   template: templateDispatch.yml
@@ -43,7 +46,10 @@ extends:
 
       # This container contains all required toolsets to build for Android and for Linux with bionic libc.
       android:
-        image: mcr.microsoft.com/dotnet-buildtools/prereqs:azurelinux-3.0-net10.0-cross-android-amd64
+        ${{ if and(parameters.isOfficialBuild, parameters.enableMonoStartupMetadata) }}:
+          image: mcr.microsoft.com/dotnet-buildtools/prereqs@sha256:62d9af8ee1655023cc103457f52e4679efbe1d81392d8668147e91a931082b3d
+        ${{ else }}:
+          image: mcr.microsoft.com/dotnet-buildtools/prereqs:azurelinux-3.0-net10.0-cross-android-amd64
 
       # This container contains all required toolsets to build for Android and for Linux with bionic libc and a special layout of OpenSSL.
       linux_bionic:

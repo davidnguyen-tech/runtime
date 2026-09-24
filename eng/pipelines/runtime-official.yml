@@ -47,6 +47,7 @@ extends:
   template:  /eng/pipelines/common/templates/pipeline-with-resources.yml
   parameters:
     isOfficialBuild: true
+    enableMonoStartupMetadata: ${{ parameters.enableMonoStartupMetadata }}
     stages:
     - ${{ if eq(parameters.enableMonoStartupMetadata, true) }}:
       - template: /eng/pipelines/mono-android-startup-metadata.yml

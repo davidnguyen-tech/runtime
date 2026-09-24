@@ -77,7 +77,9 @@ class ProducerTests(unittest.TestCase):
         original = baseline.stdout
         current = (ROOT / producer.PIPELINE_PATH).read_text()
         self.assertTrue(current.startswith(original.split("variables:\n")[0]))
-        self.assertEqual(current.split("variables:\n", 1)[1].split("    stages:\n", 1)[0],
+        image_flag = "    enableMonoStartupMetadata: ${{ parameters.enableMonoStartupMetadata }}\n"
+        self.assertEqual(current.count(image_flag), 1)
+        self.assertEqual(current.replace(image_flag, "").split("variables:\n", 1)[1].split("    stages:\n", 1)[0],
                          original.split("variables:\n", 1)[1].split("    stages:\n", 1)[0])
         self.assertIn("name: enableMonoStartupMetadata", current)
         self.assertIn("  type: boolean\n  default: false\n", current)
@@ -106,7 +108,7 @@ class ProducerTests(unittest.TestCase):
         self.assertIn("--validate-pipeline", preflight["steps"][1]["bash"])
         self.assertEqual(build["dependsOn"], preflight["name"])
         self.assertEqual(sign["dependsOn"], build["name"])
-        self.assertEqual(build["container"], {"image": producer.PRODUCER_IMAGE})
+        self.assertEqual(build["container"], "android")
         self.assertEqual(build["steps"][0]["env"]["REVIEWED_SOURCE"], "${{ parameters.sourceCommit }}")
         self.assertEqual(sign["steps"][0]["env"]["REVIEWED_SOURCE"], "${{ parameters.sourceCommit }}")
         self.assertEqual(build["steps"][0]["name"], "BuildEvidence")
@@ -136,6 +138,38 @@ class ProducerTests(unittest.TestCase):
         plugin = (ROOT / "eng/common/core-templates/steps/install-microbuild.yml").read_text()
         self.assertIn("microbuildUseESRP", plugin)
         self.assertIn("in(variables['_SignType'], 'real', 'test')", plugin)
+
+    def test_diagnostic_android_resource_default_matrix(self):
+        path = "eng/pipelines/common/templates/pipeline-with-resources.yml"
+        baseline = producer.subprocess.run([
+            "git", "show", producer.BASELINE + ":" + path,
+        ], cwd=ROOT, env=dict(producer.os.environ), stdout=producer.subprocess.PIPE,
+            stderr=producer.subprocess.PIPE, text=True)
+        self.assertEqual(baseline.returncode, 0, baseline.stderr)
+        current = (ROOT / path).read_text()
+        parameter = "  - name: enableMonoStartupMetadata\n    type: boolean\n    default: false\n"
+        self.assertEqual(current.count(parameter), 1)
+        normal_image = producer.IMAGE_PREFIX.replace("@sha256:", ":") + "azurelinux-3.0-net10.0-cross-android-amd64"
+        normal = f"      android:\n        image: {normal_image}\n"
+        conditional = (
+            "      android:\n"
+            "        ${{ if and(parameters.isOfficialBuild, parameters.enableMonoStartupMetadata) }}:\n"
+            f"          image: {producer.PRODUCER_IMAGE}\n"
+            "        ${{ else }}:\n"
+            f"          image: {normal_image}\n"
+        )
+        self.assertEqual(current.count(conditional), 1)
+        for official in (False, True):
+            for enabled in (False, True):
+                with self.subTest(official=official, enabled=enabled):
+                    image = producer.PRODUCER_IMAGE if official and enabled else normal_image
+                    resolved = current.replace(parameter, "").replace(conditional, f"      android:\n        image: {image}\n")
+                    self.assertEqual(resolved, baseline.stdout.replace(normal, f"      android:\n        image: {image}\n"))
+        graph = json.loads((ROOT / "eng/pipelines/mono-android-startup-metadata.yml").read_text())
+        stage, = graph["stages"]
+        self.assertEqual(next(item["value"] for item in stage["variables"] if item["name"] == "StartupMetadataImage"),
+                         producer.PRODUCER_IMAGE)
+        self.assertNotIn("enableMonoStartupMetadata", current.split("    containers:\n", 1)[0].split("extends:\n", 1)[1])
 
     def test_marker_forward_and_invalidation(self):
         project = ET.parse(ROOT / "src/mono/mono.proj")
