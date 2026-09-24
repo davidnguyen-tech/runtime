@@ -17,7 +17,7 @@ spec = importlib.util.spec_from_file_location("producer", SCRIPT)
 producer = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(producer)
 SOURCE = "a" * 40
-IMAGE = producer.IMAGE_PREFIX + "b" * 64
+IMAGE = producer.PRODUCER_IMAGE
 
 
 class ProducerTests(unittest.TestCase):
@@ -25,6 +25,13 @@ class ProducerTests(unittest.TestCase):
         args = {"source": SOURCE, "run_id": "123.1", "image": IMAGE, "enabled": True}
         args.update(overrides)
         return producer.plan(**args)
+
+    def pipeline_environment(self, job="BuildRuntimePacks"):
+        return {"BUILD_REASON": "Manual", "SYSTEM_TEAMPROJECT": "internal",
+                "BUILD_REPOSITORY_ID": producer.REPOSITORY_ID, "SYSTEM_DEFINITIONID": "679",
+                "BUILD_SOURCEVERSION": SOURCE, "BUILD_SOURCEBRANCH": "refs/heads/test-only-diagnostics",
+                "BUILD_BUILDID": "123", "SYSTEM_JOBATTEMPT": "1", "SYSTEM_JOBNAME": job,
+                "BUILD_BUILDNUMBER": "20260924.1", "STARTUP_EXPERIMENT_ATTEMPT": "1"}
 
     def test_disabled(self):
         with self.assertRaisesRegex(ValueError, "disabled"):
@@ -60,41 +67,75 @@ class ProducerTests(unittest.TestCase):
         self.assertFalse(recipe["signing"])
 
     def test_real_pipeline_graph(self):
-        # JSON is a YAML subset, permitting dependency-free parsing of this deliberately
-        # template-free graph. These local branch checks are not Azure compilation.
+        # Compare the default root literally with its exact baseline. Parse the
+        # diagnostic stage's JSON/YAML subset, without pretending to expand 1ES.
+        baseline = producer.subprocess.run([
+            "git", "show", producer.BASELINE + ":eng/pipelines/runtime-official.yml",
+        ], cwd=ROOT, env=dict(producer.os.environ), stdout=producer.subprocess.PIPE,
+            stderr=producer.subprocess.PIPE, text=True)
+        self.assertEqual(baseline.returncode, 0, baseline.stderr)
+        original = baseline.stdout
+        current = (ROOT / producer.PIPELINE_PATH).read_text()
+        self.assertTrue(current.startswith(original.split("variables:\n")[0]))
+        self.assertEqual(current.split("variables:\n", 1)[1].split("    stages:\n", 1)[0],
+                         original.split("variables:\n", 1)[1].split("    stages:\n", 1)[0])
+        self.assertIn("name: enableMonoStartupMetadata", current)
+        self.assertIn("  type: boolean\n  default: false\n", current)
+        enabled, disabled = current.split("    stages:\n", 1)[1].split(
+            "    - ${{ if eq(parameters.enableMonoStartupMetadata, false) }}:\n")
+        self.assertEqual(enabled,
+                         "    - ${{ if eq(parameters.enableMonoStartupMetadata, true) }}:\n"
+                         "      - template: /eng/pipelines/mono-android-startup-metadata.yml\n"
+                         "        parameters:\n"
+                         "          sourceCommit: ${{ parameters.monoStartupSourceCommit }}\n"
+                         "          attempt: ${{ parameters.monoStartupAttempt }}\n")
+        default_stages = "\n".join(line[2:] if line else "" for line in disabled.splitlines())
+        self.assertEqual(default_stages, original.split("    stages:\n", 1)[1].rstrip("\n"))
         graph = json.loads((ROOT / "eng/pipelines/mono-android-startup-metadata.yml").read_text())
-        self.assertEqual(graph["trigger"], "none")
-        self.assertEqual(graph["pr"], "none")
-        params = {p["name"]: p["default"] for p in graph["parameters"]}
-        self.assertFalse(params["enableProducer"])
-        condition = "${{ if eq(parameters.enableProducer, true) }}"
-        disabled = "${{ if eq(parameters.enableProducer, false) }}"
-        self.assertEqual(list(graph["stages"][0]), [disabled])
-        self.assertEqual(list(graph["stages"][1]), [condition])
-        for enabled in (False, True):
-            stages = graph["stages"][1][condition] if enabled else graph["stages"][0][disabled]
-            self.assertEqual(len(stages), 1)
-            self.assertGreater(len(stages[0]["jobs"]), 0)
-        guard = graph["stages"][0][disabled][0]["jobs"][0]
-        self.assertNotIn("container", guard)
-        self.assertEqual(guard["steps"], [
-            {"checkout": "none"},
-            {"bash": "printf '%s\\n' 'Diagnostic producer is disabled; no build or package action.'",
-             "displayName": "Report disabled state"},
-        ])
-        stage = graph["stages"][1][condition][0]
+        self.assertEqual(set(graph), {"parameters", "stages"})
+        self.assertEqual(graph["parameters"], [{"name": "sourceCommit", "type": "string"},
+                                               {"name": "attempt", "type": "number", "default": 1}])
+        stage, = graph["stages"]
         self.assertEqual(stage["condition"], "and(succeeded(), eq(variables['Build.Reason'], 'Manual'))")
-        self.assertEqual(len(stage["jobs"]), 2)
-        preflight, job = stage["jobs"]
+        self.assertEqual(len(stage["jobs"]), 3)
+        for job in stage["jobs"]:
+            self.assertEqual(job["template"], "/eng/common/templates-official/job/job.yml")
+        preflight, build, sign = [job["parameters"] for job in stage["jobs"]]
         self.assertNotIn("container", preflight)
         self.assertIn("--plan-only", preflight["steps"][1]["bash"])
-        self.assertEqual(job["dependsOn"], preflight["job"])
-        self.assertEqual(job["container"], "${{ parameters.containerImage }}")
-        self.assertEqual(len(job["steps"]), 3)
-        self.assertFalse(job["steps"][0]["persistCredentials"])
-        self.assertEqual(job["steps"][2]["task"], "PublishPipelineArtifact@1")
-        self.assertIn("produce-mono-android-startup.py --enable", job["steps"][1]["bash"])
-        self.assertNotIn("template", json.dumps(graph).lower())
+        self.assertIn("--validate-pipeline", preflight["steps"][1]["bash"])
+        self.assertEqual(build["dependsOn"], preflight["name"])
+        self.assertEqual(sign["dependsOn"], build["name"])
+        self.assertEqual(build["container"], {"image": producer.PRODUCER_IMAGE})
+        self.assertEqual(build["steps"][0]["env"]["REVIEWED_SOURCE"], "${{ parameters.sourceCommit }}")
+        self.assertEqual(sign["steps"][0]["env"]["REVIEWED_SOURCE"], "${{ parameters.sourceCommit }}")
+        self.assertEqual(build["steps"][0]["name"], "BuildEvidence")
+        self.assertIn("variable=ProducerAttempt;isOutput=true", build["steps"][0]["bash"])
+        self.assertIn("--ndk-revision 27.2.12479018", build["steps"][0]["bash"])
+        self.assertEqual(sign["artifacts"]["download"]["name"],
+                         "mono-android-startup-unsigned-unadmitted-$(ProducerAttempt)")
+        variables = {item["name"]: item["value"] for item in sign["variables"]}
+        self.assertEqual(variables["ProducerAttempt"],
+                         "$[ dependencies.BuildRuntimePacks.outputs['BuildEvidence.ProducerAttempt'] ]")
+        self.assertEqual(variables["_SignType"], "test")
+        self.assertTrue(sign["enableMicrobuild"])
+        self.assertFalse(sign["microbuildUseESRP"])
+        self.assertFalse(sign["enableMicrobuildForMacAndLinux"])
+        self.assertFalse(sign["enablePublishing"])
+        self.assertFalse(sign["enablePublishBuildAssets"])
+        for job in (build, sign):
+            self.assertEqual(job["steps"][0]["env"]["STARTUP_EXPERIMENT_ATTEMPT"], "${{ parameters.attempt }}")
+            self.assertEqual([step["checkout"] for step in job["preSteps"]], ["self", "1ESPipelineTemplates"])
+            self.assertTrue(all(not step["persistCredentials"] for step in job["preSteps"]))
+            output, = job["templateContext"]["outputs"]
+            self.assertEqual(output["output"], "pipelineArtifact")
+            self.assertEqual(output["condition"], "succeededOrFailed()")
+            self.assertFalse(output["isProduction"])
+        self.assertNotIn("publish-build-assets.yml", json.dumps(graph))
+        self.assertNotIn("ESRP", json.dumps(graph).replace("microbuildUseESRP", ""))
+        plugin = (ROOT / "eng/common/core-templates/steps/install-microbuild.yml").read_text()
+        self.assertIn("microbuildUseESRP", plugin)
+        self.assertIn("in(variables['_SignType'], 'real', 'test')", plugin)
 
     def test_marker_forward_and_invalidation(self):
         project = ET.parse(ROOT / "src/mono/mono.proj")
@@ -132,9 +173,9 @@ class ProducerTests(unittest.TestCase):
             f"{native}libmonosgen-2.0.a": b"!<arch>\n",
             f"{native}libmono-component-debugger.so": bytes(header) + recipe["marker"].encode() + b"\0",
             f"{native}libSystem.Native.so": bytes(header),
-            f"runtimes/{rid}/lib/net10.0/System.Private.CoreLib.dll": b"synthetic-test-only",
+            f"{native}System.Private.CoreLib.dll": b"synthetic-test-only",
         }
-        listed = "".join(f'<File Path="{name}" />' for name in files)
+        listed = "".join(f'<File Type="Native" Path="{name}" />' for name in files)
         files["data/RuntimeList.xml"] = (
             '<FileList FrameworkName="Microsoft.NETCore.App" TargetFrameworkVersion="10.0">' +
             listed + "</FileList>").encode()
@@ -195,6 +236,9 @@ class ProducerTests(unittest.TestCase):
         native = "runtimes/android-x64/native/"
         mutations = [
             {native + "libmonosgen-2.0.so": None},
+            {native + "System.Private.CoreLib.dll": None},
+            {native + "System.Private.CoreLib.dll": None,
+             "runtimes/android-x64/lib/net10.0/System.Private.CoreLib.dll": b"wrong-normal-Mono-layout"},
             {native + "libmonosgen-2.0.so": b"not-elf"},
             {native + "libmono-component-debugger.so": b"\x7fELF\x02\x01" + b"\0" * 12 + b"\x3e\0"},
             {"data/RuntimeList.xml": b'<FileList FrameworkName="Wrong" />'},
@@ -300,13 +344,12 @@ class ProducerTests(unittest.TestCase):
     def test_failed_producer_persists_actual_command_ledger(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
-            with patch.object(producer.sys, "platform", "linux"), patch.dict(producer.os.environ, {
-                    "BUILD_REASON": "Manual", "BUILD_BUILDID": "123", "SYSTEM_JOBATTEMPT": "1"}):
+            with patch.object(producer.sys, "platform", "linux"), patch.dict(producer.os.environ, self.pipeline_environment()):
                 with self.assertRaisesRegex(ValueError, "source-head failed"):
                     producer.produce(root, self.recipe(), root / "missing-ndk", "28.2.13676358")
             output = root / "artifacts/startup-metadata-producer"
             receipt = json.loads((output / "receipt.json").read_text())
-            self.assertEqual(receipt["schemaVersion"], 2)
+            self.assertEqual(receipt["schemaVersion"], 3)
             self.assertEqual(receipt["status"], "failed")
             observation, = receipt["command_observations"]
             self.assertEqual(observation["argv"], ["git", "rev-parse", "HEAD"])
@@ -321,6 +364,329 @@ class ProducerTests(unittest.TestCase):
         data = b"streaming-hash-fixture" * 10000
         with patch.object(producer.hashlib, "file_digest", create=True, side_effect=AssertionError("Requires Python 3.11")):
             self.assertEqual(producer.stream_sha256(io.BytesIO(data)), producer.hashlib.sha256(data).hexdigest())
+
+    def test_existing_definition_and_feature_branch_gate(self):
+        with patch.dict(producer.os.environ, self.pipeline_environment()):
+            identity = producer.pipeline_identity(SOURCE)
+            self.assertEqual(identity["definitionId"], 679)
+            self.assertEqual(identity["pipelineCommit"], SOURCE)
+            for key, values in {
+                "BUILD_REASON": ["IndividualCI", "PullRequest"],
+                "SYSTEM_DEFINITIONID": ["1104", "1441", "679\n"],
+                "BUILD_REPOSITORY_ID": ["wrong-repository"],
+                "SYSTEM_TEAMPROJECT": ["public"],
+                "BUILD_SOURCEVERSION": ["b" * 40],
+                "BUILD_SOURCEBRANCH": ["refs/heads/main", "refs/heads/master", "refs/heads/release/10.0",
+                                       "refs/heads/internal/release/10.0", "refs/pull/1/merge"],
+                "BUILD_BUILDID": ["0", "001", "2147483648"],
+                "SYSTEM_JOBATTEMPT": ["0", "1\n"],
+            }.items():
+                for value in values:
+                    with self.subTest(key=key, value=value), patch.dict(producer.os.environ, {key: value}):
+                        with self.assertRaises(ValueError):
+                            producer.pipeline_identity(SOURCE)
+
+    def configuration_fixture(self, folder, output, rid):
+        directory = folder / f"artifacts/obj/mono/android.{producer.RID_ARCH[rid][0]}.Release"
+        compiler = directory / "CMakeFiles/1.0"
+        compiler.mkdir(parents=True)
+        abi = "x86_64" if rid == "android-x64" else "arm64-v8a"
+        (directory / "CMakeCache.txt").write_text(
+            f"# SYNTHETIC TEST ONLY\nANDROID_ABI:UNINITIALIZED={abi}\nCMAKE_BUILD_TYPE:STRING=Release\n"
+            f"MONO_ANDROID_STARTUP_BUILD_ID:STRING={self.recipe()['marker']}\n", encoding="ascii")
+        for language in ("C", "CXX"):
+            (compiler / f"CMake{language}Compiler.cmake").write_text("# SYNTHETIC COMPILER IDENTIFICATION\n", encoding="ascii")
+        return producer.native_configuration(folder, output, rid, self.recipe()["marker"])
+
+    def test_actual_configure_file_copy_and_marker_gate(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            output = root / "output"
+            output.mkdir()
+            for rid in producer.RID_ARCH:
+                configuration = self.configuration_fixture(root, output, rid)
+                self.assertEqual(configuration["value"], self.recipe()["marker"])
+                self.assertEqual(len(configuration["evidence"]), 3)
+                for item in configuration["evidence"]:
+                    self.assertEqual((root / item["sourcePath"]).read_bytes(), (output / item["fileName"]).read_bytes())
+                    self.assertEqual(item["sha256"], producer.sha256(output / item["fileName"]))
+                with self.assertRaisesRegex(ValueError, "cache marker"):
+                    producer.native_configuration(root, output, rid, "wrong-marker")
+
+    def test_signed_inventory_keeps_native_validation(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = self.package(Path(folder), changes={".signature.p7s": b"SYNTHETIC-NOT-A-SIGNATURE"})
+            result = producer.inventory_package(path, "android-x64", self.recipe()["version"],
+                                                self.recipe()["marker"], signature_expected=True)
+            self.assertTrue(result["signatureEntryPresent"])
+            self.assertEqual(len(result["entries"]), 8)
+            with self.assertRaisesRegex(ValueError, "signature-entry"):
+                producer.inventory_package(path, "android-x64", self.recipe()["version"], self.recipe()["marker"])
+            path = self.package(Path(folder))
+            with self.assertRaisesRegex(ValueError, "signature-entry"):
+                producer.inventory_package(path, "android-x64", self.recipe()["version"],
+                                           self.recipe()["marker"], signature_expected=True)
+
+    def test_normal_signing_scope_with_actual_msbuild(self):
+        sdk = json.loads((ROOT / "global.json").read_text())["msbuild-sdks"]["Microsoft.DotNet.Arcade.Sdk"]
+        sign_props = ROOT / ".packages/microsoft.dotnet.arcade.sdk" / sdk / "tools/Sign.props"
+        self.assertTrue(sign_props.is_file(), "Native baseline must restore the pinned Arcade SDK")
+        dotnet = ROOT / ".dotnet" / ("dotnet.exe" if producer.os.name == "nt" else "dotnet")
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            shipping = root / "packages/Release/Shipping"
+            shipping.mkdir(parents=True)
+            for rid in producer.RID_ARCH:
+                package = self.package(shipping, rid)
+                project = ET.Element("Project")
+                properties = ET.SubElement(project, "PropertyGroup")
+                for name, value in {
+                    "TargetOS": "android", "TargetArchitecture": producer.RID_ARCH[rid][0],
+                    "Configuration": "Release", "PostBuildSign": "false",
+                    "RepositoryEngineeringDir": str(ROOT / "eng") + producer.os.sep,
+                    "ArtifactsPackagesDir": str(root / "packages/Release") + producer.os.sep,
+                    "ArtifactsShippingPackagesDir": str(shipping) + producer.os.sep,
+                    "ArtifactsNonShippingPackagesDir": str(root / "packages/Release/NonShipping") + producer.os.sep,
+                    "VisualStudioSetupOutputPath": str(root / "VSSetup/Release") + producer.os.sep,
+                    "VisualStudioBuildPackagesDir": str(root / "VSSetup/Release/DevDivPackages") + producer.os.sep,
+                }.items():
+                    ET.SubElement(properties, name).text = value
+                ET.SubElement(project, "Import", {"Project": str(sign_props)})
+                project_path = root / "selection.proj"
+                ET.ElementTree(project).write(project_path, encoding="utf-8")
+                result = producer.subprocess.run([
+                    str(dotnet), "msbuild", str(project_path), "-getItem:ItemsToSign", "-nologo", "-verbosity:quiet",
+                ], cwd=ROOT, env=dict(producer.os.environ, NUGET_PACKAGES=str(ROOT / ".packages")),
+                    stdout=producer.subprocess.PIPE, stderr=producer.subprocess.STDOUT, text=True)
+                self.assertEqual(result.returncode, 0, result.stdout)
+                items = json.loads(result.stdout)["Items"]["ItemsToSign"]
+                self.assertEqual(len(items), 1)
+                self.assertEqual(Path(items[0]["FullPath"]).resolve(), package.resolve())
+                package.unlink()
+
+    def test_actual_mono_sfx_corelib_classification(self):
+        dotnet = ROOT / ".dotnet" / ("dotnet.exe" if producer.os.name == "nt" else "dotnet")
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            mono = root / "mono"
+            mono.mkdir()
+            (mono / "System.Private.CoreLib.dll").write_bytes(b"SYNTHETIC ASSET; METADATA TEST ONLY")
+            project = ET.Element("Project")
+            ET.SubElement(project, "Import", {"Project": str(ROOT / "eng/liveBuilds.targets")})
+            path = root / "corelib-classification.proj"
+            ET.ElementTree(project).write(path, encoding="utf-8")
+            result = producer.subprocess.run([
+                str(dotnet), "msbuild", str(path), "/t:ResolveRuntimeFilesFromLocalBuild",
+                "/p:RuntimeFlavor=Mono", f"/p:MonoArtifactsPath={mono}{producer.os.sep}",
+                "-getItem:RuntimeFiles", "-nologo", "-verbosity:quiet",
+            ], cwd=ROOT, env=dict(producer.os.environ, NUGET_PACKAGES=str(ROOT / ".packages")),
+                stdout=producer.subprocess.PIPE, stderr=producer.subprocess.STDOUT, text=True)
+            self.assertEqual(result.returncode, 0, result.stdout)
+            item, = json.loads(result.stdout)["Items"]["RuntimeFiles"]
+            self.assertEqual(item["Filename"] + item["Extension"], "System.Private.CoreLib.dll")
+            self.assertEqual(item["IsNative"], "true")
+        project = ET.parse(ROOT / "src/installer/pkg/sfx/Microsoft.NETCore.App/Microsoft.NETCore.App.Runtime.props")
+        target = next(node for node in project.iter("Target") if node.attrib["Name"] == "AddRuntimeFilesToPackage")
+        native = next(node for node in target.iter("RuntimeFiles") if node.attrib.get("Condition") == "'%(RuntimeFiles.IsNative)' == 'true'")
+        self.assertEqual(native.find("TargetPath").text, "runtimes/$(RuntimeIdentifier)/native")
+
+    def build_fixture(self, folder):
+        folder.mkdir()
+        packages = folder / "packages"
+        packages.mkdir()
+        recipe = self.recipe()
+        with patch.dict(producer.os.environ, self.pipeline_environment()):
+            identity = producer.pipeline_identity(SOURCE)
+        receipt = {**recipe, "schemaVersion": 3, "kind": "mono-android-startup-build-receipt",
+                   "status": "produced-unsigned-unadmitted", "pipeline": identity,
+                   "packages": [], "package_sidecars": [], "command_observations": [], "native_configuration": {},
+                   "experiment_attempt": 1,
+                   "templates": [{"repository": "1ESPipelineTemplates/1ESPipelineTemplates", "commit": producer.EXPECTED_1ES_COMMIT,
+                                  "path": "v1/1ES.Official.PipelineTemplate.yml", "sha256": "d" * 64}]}
+        (folder / "source.patch").write_text("SYNTHETIC TEST INPUT, NOT AN ACTUAL SOURCE PATCH\n", encoding="ascii")
+        receipt["patch_sha256"] = producer.sha256(folder / "source.patch")
+        producer.write_json(folder / "fixture-notice.json", {
+            "synthetic": True, "nativeBuildExecuted": False, "signerAndVerifier": "explicit-test-mocks",
+            "qualification": "No real package, signature, compiler, template checkout, CI or guest claim",
+        })
+        for command in recipe["commands"]:
+            log = folder / (command["name"] + ".log")
+            log.write_text("SYNTHETIC BUILD OBSERVATION, NOT EXECUTED\n", encoding="ascii")
+            receipt["command_observations"].append({
+                "name": command["name"], "argv": command["argv"], "cwd": "synthetic-source",
+                "status": "completed", "exitCode": 0, "logFileName": log.name, "logSha256": producer.sha256(log),
+            })
+        for rid in producer.RID_ARCH:
+            package = self.package(packages, rid)
+            inventory = producer.inventory_package(package, rid, recipe["version"], recipe["marker"])
+            receipt["packages"].append(inventory)
+            inventory_file = folder / f"inventory.{inventory['id']}.json"
+            signature_file = folder / f"signature.{inventory['id']}.json"
+            producer.write_json(inventory_file, inventory)
+            def test_only_unsigned_verify(command, **kwargs):
+                kwargs["stdout"].write(b"EXPLICIT TEST MOCK: unsigned synthetic archive\n")
+                return producer.subprocess.CompletedProcess(command, 1)
+            with patch.object(producer.subprocess, "run", side_effect=test_only_unsigned_verify):
+                signature = producer.verify_signature("test-only-dotnet", package, inventory, {}, folder,
+                                                      "10.0.110", receipt["command_observations"])
+            producer.write_json(signature_file, signature)
+            receipt["package_sidecars"].append({
+                "id": inventory["id"], "inventoryFileName": inventory_file.name, "inventorySha256": producer.sha256(inventory_file),
+                "signatureFileName": signature_file.name, "signatureSha256": producer.sha256(signature_file),
+            })
+            receipt["native_configuration"][rid] = self.configuration_fixture(folder.parent / "synthetic-config", folder, rid)
+        producer.persist_receipt(folder, receipt)
+        return receipt
+
+    def test_build_artifact_binding_and_duplicate_json(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            build = self.build_fixture(root / "input")
+            with patch.dict(producer.os.environ, self.pipeline_environment("TestSignRuntimePacks")):
+                identity = producer.pipeline_identity(SOURCE)
+            self.assertEqual(producer.validate_build_input(root / "input", self.recipe(), identity), build)
+            for key, value in [("buildId", 124), ("pipelineCommit", "b" * 40)]:
+                with self.subTest(key=key), self.assertRaisesRegex(ValueError, "exact producer invocation"):
+                    producer.validate_build_input(root / "input", self.recipe(), {**identity, key: value})
+            changed = {**build, "command_observations": []}
+            producer.write_json(root / "input/receipt.json", changed)
+            with self.assertRaisesRegex(ValueError, "observations"):
+                producer.validate_build_input(root / "input", self.recipe(), identity)
+            producer.write_json(root / "input/receipt.json", build)
+            (root / "input/source.patch").write_text("tampered", encoding="ascii")
+            with self.assertRaisesRegex(ValueError, "hash/size"):
+                producer.validate_build_input(root / "input", self.recipe(), identity)
+            duplicate = root / "duplicate.json"
+            duplicate.write_text('{"key": 1, "key": 2}', encoding="ascii")
+            with self.assertRaisesRegex(ValueError, "Duplicate JSON"):
+                producer.read_json(duplicate)
+
+    def sign_fixture(self, folder, verification_exit=0, sign_exit=0, verifier_launch_failure=False, sign_attempt=1):
+        """Exercise real ZIP/receipt orchestration with explicitly mocked external signing boundaries."""
+        input_folder = folder / "input"
+        build = self.build_fixture(input_folder)
+        root = folder / "source"
+        root.mkdir()
+        producer.write_json(root / "global.json", {"msbuild-sdks": {"Microsoft.DotNet.Arcade.Sdk": "test-only-sdk"}})
+        output = folder / "output"
+        def test_only_command(command, **kwargs):
+            stdout = kwargs["stdout"]
+            if command[0] == "pwsh":
+                self.assertIn("/p:Publish=false", command)
+                self.assertIn("/p:DotNetSignType=test", command)
+                self.assertIn("/p:NuGetAudit=true", command)
+                self.assertEqual(command[command.index("-projects") + 1], "src/mono/mono.proj")
+                self.assertNotIn("-build", command)
+                binlog = root / "artifacts/log/Release/Build.binlog"
+                binlog.parent.mkdir(parents=True, exist_ok=True)
+                binlog.write_bytes(b"EXPLICIT TEST MOCK, NOT A REAL MSBUILD BINLOG")
+                stdout.write(b"EXPLICIT TEST MOCK, NOT AN ACTUAL SIGNER\n")
+                if "-sign" in command:
+                    package, = (root / "artifacts/packages/Release/Shipping").glob("*.nupkg")
+                    with zipfile.ZipFile(package, "a") as archive:
+                        archive.writestr(".signature.p7s", b"SYNTHETIC-NOT-A-VALID-SIGNATURE")
+                    return producer.subprocess.CompletedProcess(command, sign_exit)
+            elif "msbuild" in command:
+                package, = (root / "artifacts/packages/Release/Shipping").glob("*.nupkg")
+                arch = next(value.split("=", 1)[1] for value in command if value.startswith("/p:TargetArchitecture="))
+                stdout.write(json.dumps({
+                    "Properties": {"OfficialBuild": "true", "DotNetSignType": "test", "ForceDryRunSigning": "",
+                                   "PostBuildSign": "false", "TargetRid": "android-" + arch},
+                    "Items": {"ItemsToSign": [{"FullPath": str(package)}]},
+                }).encode())
+            elif "--version" in command:
+                self.assertEqual(Path(kwargs["cwd"]), output / "postsign")
+                stdout.write(b"10.0.110\n")
+            elif command[1:4] == ["nuget", "verify", "--all"]:
+                if verifier_launch_failure:
+                    raise FileNotFoundError("EXPLICIT TEST MOCK: verifier launch failure")
+                self.assertEqual(Path(kwargs["cwd"]) / command[-1], output / "postsign" / command[-1])
+                stdout.write(b"EXPLICIT TEST MOCK VERIFIER; SYNTHETIC SIGNATURE IS NOT VALID\n")
+                return producer.subprocess.CompletedProcess(command, verification_exit)
+            else:
+                self.fail("Unexpected command in explicit mock boundary: " + repr(command))
+            return producer.subprocess.CompletedProcess(command, 0)
+        environment = {**self.pipeline_environment("TestSignRuntimePacks"), "SYSTEM_JOBATTEMPT": str(sign_attempt)}
+        with patch.dict(producer.os.environ, environment), \
+                patch.object(producer.sys, "platform", "win32"), \
+                patch.object(producer, "source_evidence", return_value=build["patch_sha256"]), \
+                patch.object(producer, "template_evidence", return_value=build["templates"]), \
+                patch.object(producer.subprocess, "run", side_effect=test_only_command):
+            if sign_exit or verification_exit or verifier_launch_failure:
+                with self.assertRaises((ValueError, FileNotFoundError)):
+                    producer.test_sign(root, self.recipe(), input_folder, output)
+            else:
+                producer.test_sign(root, self.recipe(), input_folder, output)
+        return output
+
+    def test_postsign_success_and_failed_verification_preserve_evidence(self):
+        for exit_code in (0, 1):
+            with self.subTest(exit_code=exit_code), tempfile.TemporaryDirectory() as folder:
+                output = self.sign_fixture(Path(folder), verification_exit=exit_code, sign_attempt=2)
+                root = producer.read_json(output / "receipt.json")
+                self.assertEqual(root["status"], "verified-policy-unqualified" if exit_code == 0 else "produced-verification-failed")
+                self.assertFalse(root["publication"])
+                self.assertEqual(len(root["packages"]), 2)
+                retained = {item["path"]: item["sha256"] for item in root["retained_files"]}
+                self.assertEqual(retained["build/receipt.json"], producer.sha256(output / "build/receipt.json"))
+                self.assertEqual((output / "postsign/build-receipt.json").read_bytes(),
+                                 (output / "build/receipt.json").read_bytes())
+                for entry in root["packages"]:
+                    post = producer.read_json(output / "postsign" / entry["fileName"])
+                    self.assertEqual(post["status"], root["status"])
+                    self.assertNotEqual(post["input"]["sha256"], post["output"]["sha256"])
+                    self.assertEqual(post["signer"]["requestedSignType"], "Test")
+                    self.assertEqual(post["signer"]["jobAttempt"], 2)
+                    self.assertEqual(post["version"], self.recipe()["version"])
+                    self.assertEqual([item["role"] for item in post["operationEvidence"]], ["sign", "sign", "verify"])
+                    for ref in (post["nativeProvenance"], post["memberDelta"], post["output"]["inventory"],
+                                post["output"]["signature"], post["input"]["inventory"]):
+                        self.assertEqual(ref["sha256"], producer.sha256(output / "postsign" / ref["fileName"]))
+                    signature = producer.read_json(output / "postsign" / post["output"]["signature"]["fileName"])
+                    self.assertEqual(signature["verificationExitCode"], exit_code)
+                    self.assertEqual(signature["classification"],
+                                     "signature-valid-policy-unqualified" if exit_code == 0 else "verification-failed")
+                    native = producer.read_json(output / "postsign" / post["nativeProvenance"]["fileName"])
+                    self.assertEqual(native["packageSha256"], post["output"]["sha256"])
+                    self.assertEqual(native["configuration"]["value"], self.recipe()["marker"])
+                    self.assertEqual(native["carriers"][0]["gnuBuildIdStatus"], "not-collected")
+                    self.assertIsNone(native["carriers"][0]["gnuBuildId"])
+                    self.assertEqual(native["carriers"][0]["machine"], producer.RID_ARCH[post["rid"]][1])
+                    delta = producer.read_json(output / "postsign" / post["memberDelta"]["fileName"])
+                    self.assertEqual([item["path"] for item in delta["changes"]], [".signature.p7s"])
+                    self.assertFalse(delta["policyAdmitted"])
+
+    def test_sign_failure_and_verifier_launch_failure_are_not_completed(self):
+        for arguments in ({"sign_exit": 7}, {"verifier_launch_failure": True}):
+            with self.subTest(arguments=arguments), tempfile.TemporaryDirectory() as folder:
+                output = self.sign_fixture(Path(folder), **arguments)
+                root = producer.read_json(output / "receipt.json")
+                self.assertEqual(root["status"], "failed")
+                self.assertEqual(root["packages"], [])
+                self.assertEqual(len(list((output / "postsign").glob("*.nupkg"))), 1)
+                self.assertEqual(len(list((output / "build/packages").glob("*.nupkg"))), 2)
+                last = root["command_observations"][-1]
+                self.assertEqual(last["status"], "failed" if "sign_exit" in arguments else "launch-failed")
+                self.assertEqual(last["exitCode"], 7 if "sign_exit" in arguments else None)
+                self.assertFalse(list((output / "postsign").glob("postsign.*.json")))
+
+    def test_signing_selection_and_properties_fail_closed(self):
+        package = Path("exact-package.nupkg").resolve()
+        evaluation = {"Properties": {"OfficialBuild": "true", "DotNetSignType": "test", "ForceDryRunSigning": "",
+                                      "PostBuildSign": "false", "TargetRid": "android-x64"},
+                      "Items": {"ItemsToSign": [{"FullPath": str(package)}]}}
+        producer.validate_signing_selection(evaluation, package, "android-x64")
+        for key, value in [("OfficialBuild", "false"), ("DotNetSignType", "real"), ("ForceDryRunSigning", "true"),
+                           ("PostBuildSign", "true"), ("TargetRid", "android-arm64")]:
+            with self.subTest(key=key), self.assertRaisesRegex(ValueError, "properties"):
+                producer.validate_signing_selection({**evaluation, "Properties": {**evaluation["Properties"], key: value}},
+                                                    package, "android-x64")
+        for items in ([], [{"FullPath": "other.nupkg"}], evaluation["Items"]["ItemsToSign"] * 2):
+            with self.assertRaisesRegex(ValueError, "exactly"):
+                producer.validate_signing_selection({**evaluation, "Items": {"ItemsToSign": items}}, package, "android-x64")
+        for value in ("", "123.1", "20260924.1\n", "20260924.1;echo"):
+            with self.assertRaisesRegex(ValueError, "OfficialBuildId"):
+                producer.signing_properties(self.recipe(), "android-x64", value)
 
     def test_producer_refuses_nonmanual(self):
         with patch.object(producer.sys, "platform", "linux"), patch.dict(producer.os.environ, {"BUILD_REASON": "PullRequest"}):

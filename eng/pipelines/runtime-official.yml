@@ -21,6 +21,20 @@ trigger:
 # there is no public pipeline associated with it.
 pr: none
 
+parameters:
+- name: enableMonoStartupMetadata
+  displayName: Build and TEST-sign artifact-only Mono Android startup diagnostics
+  type: boolean
+  default: false
+- name: monoStartupSourceCommit
+  displayName: Exact reviewed diagnostic feature commit (required when enabled)
+  type: string
+  default: ''
+- name: monoStartupAttempt
+  displayName: Common diagnostic experiment attempt (not a job retry number)
+  type: number
+  default: 1
+
 variables:
 - template: /eng/pipelines/common/variables.yml
   parameters:
@@ -34,38 +48,44 @@ extends:
   parameters:
     isOfficialBuild: true
     stages:
-    - ${{ if eq(variables['Build.SourceBranch'], 'refs/heads/main') }}:
-      - stage: Localization
-        dependsOn: []
-        jobs:
-        #
-        # Localization build
-        #
-        - template: /eng/common/templates-official/job/onelocbuild.yml
-          parameters:
-            MirrorRepo: runtime
-            MirrorBranch: main
-            LclSource: lclFilesfromPackage
-            LclPackageId: 'LCL-JUNO-PROD-RUNTIME'
-      - stage: Source_Index
-        dependsOn: []
-        displayName: Source Index
-        jobs:
-        #
-        # Source Index Build
-        #
-          - template: /eng/common/templates-official/job/source-index-stage1.yml
-            parameters:
-              sourceIndexBuildCommand: build.cmd -subset libs.sfx+libs.oob -binarylog -os linux -ci /p:SkipLibrariesNativeRuntimePackages=true
-
-    - stage: Publish
-      dependsOn: []
-      jobs:
-      - template: /eng/common/templates-official/job/publish-build-assets.yml
+    - ${{ if eq(parameters.enableMonoStartupMetadata, true) }}:
+      - template: /eng/pipelines/mono-android-startup-metadata.yml
         parameters:
-          publishUsingPipelines: true
-          publishAssetsImmediately: true
-          isAssetlessBuild: true
-          pool:
-            name: $(DncEngInternalBuildPool)
-            demands: ImageOverride -equals 1es-windows-2022
+          sourceCommit: ${{ parameters.monoStartupSourceCommit }}
+          attempt: ${{ parameters.monoStartupAttempt }}
+    - ${{ if eq(parameters.enableMonoStartupMetadata, false) }}:
+      - ${{ if eq(variables['Build.SourceBranch'], 'refs/heads/main') }}:
+        - stage: Localization
+          dependsOn: []
+          jobs:
+          #
+          # Localization build
+          #
+          - template: /eng/common/templates-official/job/onelocbuild.yml
+            parameters:
+              MirrorRepo: runtime
+              MirrorBranch: main
+              LclSource: lclFilesfromPackage
+              LclPackageId: 'LCL-JUNO-PROD-RUNTIME'
+        - stage: Source_Index
+          dependsOn: []
+          displayName: Source Index
+          jobs:
+          #
+          # Source Index Build
+          #
+            - template: /eng/common/templates-official/job/source-index-stage1.yml
+              parameters:
+                sourceIndexBuildCommand: build.cmd -subset libs.sfx+libs.oob -binarylog -os linux -ci /p:SkipLibrariesNativeRuntimePackages=true
+
+      - stage: Publish
+        dependsOn: []
+        jobs:
+        - template: /eng/common/templates-official/job/publish-build-assets.yml
+          parameters:
+            publishUsingPipelines: true
+            publishAssetsImmediately: true
+            isAssetlessBuild: true
+            pool:
+              name: $(DncEngInternalBuildPool)
+              demands: ImageOverride -equals 1es-windows-2022

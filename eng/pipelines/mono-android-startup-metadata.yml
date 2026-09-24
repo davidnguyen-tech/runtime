@@ -1,90 +1,151 @@
 {
-  "trigger": "none",
-  "pr": "none",
   "parameters": [
-    { "name": "enableProducer", "type": "boolean", "default": false },
-    { "name": "sourceCommit", "type": "string", "default": "" },
-    { "name": "containerImage", "type": "string", "default": "" },
-    { "name": "ndkRoot", "type": "string", "default": "" },
-    { "name": "ndkRevision", "type": "string", "default": "" }
+    { "name": "sourceCommit", "type": "string" },
+    { "name": "attempt", "type": "number", "default": 1 }
   ],
   "stages": [
     {
-      "${{ if eq(parameters.enableProducer, false) }}": [
+      "stage": "MonoStartupMetadata",
+      "displayName": "Artifact-only Mono Android diagnostics (TEST signatures, not admitted)",
+      "dependsOn": [],
+      "condition": "and(succeeded(), eq(variables['Build.Reason'], 'Manual'))",
+      "variables": [
+        { "name": "StartupMetadata1ESCommit", "value": "$[ resources.repositories['1ESPipelineTemplates'].version ]" },
+        { "name": "StartupMetadataImage", "value": "mcr.microsoft.com/dotnet-buildtools/prereqs@sha256:62d9af8ee1655023cc103457f52e4679efbe1d81392d8668147e91a931082b3d" }
+      ],
+      "jobs": [
         {
-          "stage": "ProducerDisabled",
-          "displayName": "Diagnostic producer remains disabled",
-          "jobs": [
-            {
-              "job": "DisabledGuard",
-              "pool": { "vmImage": "ubuntu-22.04" },
-              "steps": [
-                { "checkout": "none" },
-                { "bash": "printf '%s\\n' 'Diagnostic producer is disabled; no build or package action.'",
-                  "displayName": "Report disabled state" }
-              ]
-            }
-          ]
-        }
-      ]
-    },
-    {
-      "${{ if eq(parameters.enableProducer, true) }}": [
+          "template": "/eng/common/templates-official/job/job.yml",
+          "parameters": {
+            "name": "ValidateInputs",
+            "displayName": "Validate reviewed diagnostic inputs",
+            "pool": {
+              "name": "$(DncEngInternalBuildPool)",
+              "demands": "ImageOverride -equals build.azurelinux.3.amd64",
+              "os": "linux"
+            },
+            "steps": [
+              { "checkout": "self", "fetchDepth": 1, "persistCredentials": false },
+              {
+                "bash": "set -euo pipefail\npython3 eng/diagnostics/produce-mono-android-startup.py --enable --plan-only --validate-pipeline --source \"$REVIEWED_SOURCE\" --run-id \"$BUILD_BUILDID.$STARTUP_EXPERIMENT_ATTEMPT\" --container \"$REVIEWED_CONTAINER\"\n",
+                "displayName": "Fail closed before either producer or signing job",
+                "env": {
+                  "REVIEWED_SOURCE": "${{ parameters.sourceCommit }}",
+                  "REVIEWED_CONTAINER": "$(StartupMetadataImage)",
+                  "STARTUP_EXPERIMENT_ATTEMPT": "${{ parameters.attempt }}"
+                }
+              }
+            ]
+          }
+        },
         {
-          "stage": "DiagnosticArtifacts",
-          "displayName": "Unsigned unadmitted Mono Android diagnostics",
-          "condition": "and(succeeded(), eq(variables['Build.Reason'], 'Manual'))",
-          "jobs": [
-            {
-              "job": "ValidateInputs",
-              "pool": { "vmImage": "ubuntu-22.04" },
-              "steps": [
-                { "checkout": "self", "fetchDepth": 0, "persistCredentials": false },
+          "template": "/eng/common/templates-official/job/job.yml",
+          "parameters": {
+            "name": "BuildRuntimePacks",
+            "displayName": "Build coherent Android x64 and arm64 packs",
+            "dependsOn": "ValidateInputs",
+            "timeoutInMinutes": 180,
+            "pool": {
+              "name": "$(DncEngInternalBuildPool)",
+              "demands": "ImageOverride -equals build.azurelinux.3.amd64",
+              "os": "linux"
+            },
+            "container": {
+              "image": "mcr.microsoft.com/dotnet-buildtools/prereqs@sha256:62d9af8ee1655023cc103457f52e4679efbe1d81392d8668147e91a931082b3d"
+            },
+            "preSteps": [
+              { "checkout": "self", "path": "s", "clean": true, "fetchDepth": 0, "persistCredentials": false },
+              { "checkout": "1ESPipelineTemplates", "path": "startup-templates", "fetchDepth": 1, "persistCredentials": false }
+            ],
+            "templateContext": {
+              "outputs": [
                 {
-                  "bash": "set -euo pipefail\ntest \"$(git rev-parse HEAD)\" = \"$REVIEWED_SOURCE\"\npython3 eng/diagnostics/produce-mono-android-startup.py --enable --plan-only --source \"$REVIEWED_SOURCE\" --run-id \"$BUILD_BUILDID.$SYSTEM_JOBATTEMPT\" --container \"$REVIEWED_CONTAINER\"\n",
-                  "displayName": "Validate immutable image before starting its container",
-                  "env": {
-                    "REVIEWED_SOURCE": "${{ parameters.sourceCommit }}",
-                    "REVIEWED_CONTAINER": "${{ parameters.containerImage }}"
-                  }
+                  "output": "pipelineArtifact",
+                  "targetPath": "$(Build.ArtifactStagingDirectory)/mono-startup-build",
+                  "artifactName": "mono-android-startup-unsigned-unadmitted-$(System.JobAttempt)",
+                  "condition": "succeededOrFailed()",
+                  "isProduction": false
                 }
               ]
             },
-            {
-              "job": "NormalRuntimePacks",
-              "dependsOn": "ValidateInputs",
-              "timeoutInMinutes": 180,
-              "pool": { "vmImage": "ubuntu-22.04" },
-              "container": "${{ parameters.containerImage }}",
-              "steps": [
+            "steps": [
+              {
+                "bash": "set -euo pipefail\npython3 eng/diagnostics/produce-mono-android-startup.py --enable --source \"$REVIEWED_SOURCE\" --run-id \"$BUILD_BUILDID.$STARTUP_EXPERIMENT_ATTEMPT\" --container \"$REVIEWED_CONTAINER\" --ndk \"$ANDROID_NDK_ROOT\" --ndk-revision 27.2.12479018 --output \"$PRODUCER_OUTPUT\"\nprintf '##vso[task.setvariable variable=ProducerAttempt;isOutput=true]%s\\n' \"$SYSTEM_JOBATTEMPT\"\n",
+                "name": "BuildEvidence",
+                "workingDirectory": "$(Pipeline.Workspace)/s",
+                "displayName": "Build normal packs and retain actual command evidence",
+                "env": {
+                  "REVIEWED_SOURCE": "${{ parameters.sourceCommit }}",
+                  "REVIEWED_CONTAINER": "$(StartupMetadataImage)",
+                  "PRODUCER_OUTPUT": "$(Build.ArtifactStagingDirectory)/mono-startup-build",
+                  "STARTUP_1ES_COMMIT": "$(StartupMetadata1ESCommit)",
+                  "STARTUP_1ES_ROOT": "$(Pipeline.Workspace)/startup-templates",
+                  "STARTUP_EXPERIMENT_ATTEMPT": "${{ parameters.attempt }}"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "template": "/eng/common/templates-official/job/job.yml",
+          "parameters": {
+            "name": "TestSignRuntimePacks",
+            "displayName": "Normal Windows TEST signing and final-byte evidence",
+            "dependsOn": "BuildRuntimePacks",
+            "timeoutInMinutes": 90,
+            "pool": {
+              "name": "$(DncEngInternalBuildPool)",
+              "demands": "ImageOverride -equals windows.vs2022.amd64"
+            },
+            "enableMicrobuild": true,
+            "enableMicrobuildForMacAndLinux": false,
+            "microbuildUseESRP": false,
+            "enablePublishing": false,
+            "enablePublishBuildAssets": false,
+            "variables": [
+              { "name": "_SignType", "value": "test" },
+              { "name": "_TeamName", "value": "$(TeamName)" },
+              { "name": "ProducerAttempt", "value": "$[ dependencies.BuildRuntimePacks.outputs['BuildEvidence.ProducerAttempt'] ]" }
+            ],
+            "preSteps": [
+              { "checkout": "self", "path": "s", "clean": true, "fetchDepth": 0, "persistCredentials": false },
+              { "checkout": "1ESPipelineTemplates", "path": "startup-templates", "fetchDepth": 1, "persistCredentials": false }
+            ],
+            "artifacts": {
+              "download": {
+                "name": "mono-android-startup-unsigned-unadmitted-$(ProducerAttempt)",
+                "path": "$(Pipeline.Workspace)/mono-startup-input"
+              }
+            },
+            "templateContext": {
+              "outputs": [
                 {
-                  "checkout": "self",
-                  "clean": true,
-                  "fetchDepth": 0,
-                  "persistCredentials": false
-                },
-                {
-                  "bash": "set -euo pipefail\ntest \"$(git rev-parse HEAD)\" = \"$REVIEWED_SOURCE\"\npython3 eng/diagnostics/produce-mono-android-startup.py --enable --source \"$REVIEWED_SOURCE\" --run-id \"$BUILD_BUILDID.$SYSTEM_JOBATTEMPT\" --container \"$REVIEWED_CONTAINER\" --ndk \"$REVIEWED_NDK\" --ndk-revision \"$REVIEWED_NDK_REVISION\"\n",
-                  "displayName": "Build normal packs and retain nonpromotion receipts",
-                  "env": {
-                    "REVIEWED_SOURCE": "${{ parameters.sourceCommit }}",
-                    "REVIEWED_CONTAINER": "${{ parameters.containerImage }}",
-                    "REVIEWED_NDK": "${{ parameters.ndkRoot }}",
-                    "REVIEWED_NDK_REVISION": "${{ parameters.ndkRevision }}"
-                  }
-                },
-                {
-                  "task": "PublishPipelineArtifact@1",
-                  "displayName": "Retain diagnostics artifacts only",
+                  "output": "pipelineArtifact",
+                  "targetPath": "$(Build.ArtifactStagingDirectory)/mono-startup-test-signed",
+                  "artifactName": "mono-android-startup-test-signed-unadmitted-$(System.JobAttempt)",
                   "condition": "succeededOrFailed()",
-                  "inputs": {
-                    "targetPath": "$(Build.SourcesDirectory)/artifacts/startup-metadata-producer",
-                    "artifact": "mono-android-startup-unsigned-unadmitted"
-                  }
+                  "isProduction": false
                 }
               ]
-            }
-          ]
+            },
+            "steps": [
+              {
+                "pwsh": "python eng/diagnostics/produce-mono-android-startup.py --enable --test-sign --source $env:REVIEWED_SOURCE --run-id \"$env:BUILD_BUILDID.$env:STARTUP_EXPERIMENT_ATTEMPT\" --container $env:REVIEWED_CONTAINER --input $env:PRODUCER_INPUT --output $env:PRODUCER_OUTPUT\nexit $LASTEXITCODE\n",
+                "workingDirectory": "$(Pipeline.Workspace)/s",
+                "displayName": "Run existing TEST signer without publishing or changing signing policy",
+                "env": {
+                  "REVIEWED_SOURCE": "${{ parameters.sourceCommit }}",
+                  "REVIEWED_CONTAINER": "$(StartupMetadataImage)",
+                  "PRODUCER_ATTEMPT": "$(ProducerAttempt)",
+                  "PRODUCER_INPUT": "$(Pipeline.Workspace)/mono-startup-input",
+                  "PRODUCER_OUTPUT": "$(Build.ArtifactStagingDirectory)/mono-startup-test-signed",
+                  "STARTUP_1ES_COMMIT": "$(StartupMetadata1ESCommit)",
+                  "STARTUP_1ES_ROOT": "$(Pipeline.Workspace)/startup-templates",
+                  "STARTUP_EXPERIMENT_ATTEMPT": "${{ parameters.attempt }}"
+                }
+              }
+            ]
+          }
         }
       ]
     }

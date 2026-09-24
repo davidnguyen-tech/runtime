@@ -114,17 +114,61 @@ Windows host tests do not validate Android Bionic/logcat behavior. Cross-compili
 the actual enabled debugger objects validates the Android translation units but
 does not qualify signed normal packs, a device run, or historical producer tools.
 
-## Manual artifact-only producer
+## Manual artifact-only producer through the existing official root
 
-`eng/pipelines/mono-android-startup-metadata.yml` is a disjoint pipeline with no
-CI/PR trigger and `enableProducer=false`. It uses JSON syntax (a YAML subset) to
-allow dependency-free tests to parse the entire graph and expand its sole boolean
-conditional. A non-container preflight validates the exact reviewed source and
-immutable MCR image digest before the dependent container job can start. Manual
-invocation is also checked inside the producer. The parent must review the
-source, expanded graph, image digest, NDK path/revision, and expected outputs
-before any queue is authorized. The reviewed container must also supply the
-normal Android SDK and Java build prerequisites; an NDK alone is insufficient.
+The existing `eng/pipelines/runtime-official.yml` root has
+`enableMonoStartupMetadata=false` by default. Its ordinary triggers, main-only
+Localization/Source_Index stages, assetless Publish stage, 1ES wrapper and SDL
+settings remain unchanged in that mode. When explicitly enabled, the root
+instead includes `eng/pipelines/mono-android-startup-metadata.yml` as a stage
+template; the ordinary Publish graph is excluded at template expansion time.
+This is not a new pipeline definition or a standalone diagnostics pipeline.
+
+The diagnostic stage requires a manual invocation of the existing dnceng
+`internal` definition **679**, private TfsGit repository `dotnet-runtime`
+(`a2f9a77f-0d37-4eaf-aecc-5b3ff7457ad6`), and a reviewed feature branch descending
+from `4271d88e0aebf3d04f188f1334c2220d80555ef6`. Set these root parameters:
+
+| Parameter | Value |
+|---|---|
+| `enableMonoStartupMetadata` | `true` |
+| `monoStartupSourceCommit` | Exact reviewed 40-character feature commit |
+| `monoStartupAttempt` | Positive whole-experiment attempt, normally `1` |
+
+Both ABIs and the signing job use the same
+`10.0.12-startup.<BuildId>.<ExperimentAttempt>.s<source12>` version and marker.
+Job retry numbers are recorded separately and select the exact build artifact;
+they never independently change the signing job's package version. Reusing an
+unpublished version on retry is not a reproducibility claim: archive hashes and
+actual job attempts still distinguish each result.
+
+The existing private publication route is
+`https://dev.azure.com/dnceng/internal/_git/dotnet-runtime`, using a new reviewed
+feature ref such as `refs/heads/davidnguyen-tech-mono-guest-listener-evidence`.
+Publication and queueing require separate approval. After publication, request
+a **repository-backed preview** of definition 679 with that matching self ref
+and commit, not a `yamlOverride` and not the release-only baseline paired with
+`main`. Review the expanded graph before queueing the same source/resources.
+Local structural tests are not provider compilation or signing authorization.
+
+The root retains its existing `1ESPipelineTemplates` repository resource:
+`1ESPipelineTemplates/1ESPipelineTemplates`, `refs/tags/release`. For this
+diagnostic baseline, pin its preview/run resource version to
+`8bb89477eb3e61becfe1ab21442fe9aefb031b35`. The diagnostic helper compares the
+provider's resolved resource version with that expected commit and the actual
+resource checkout, and hashes the checked-out entry template. The ordinary
+default-off root's resource behavior is not changed.
+
+`MonoStartupMetadata` contains `ValidateInputs`, `BuildRuntimePacks`, and
+`TestSignRuntimePacks`, in dependency order. The normal official job wrapper
+and branch-selected internal pool are used throughout. The Linux job uses
+`mcr.microsoft.com/dotnet-buildtools/prereqs@sha256:62d9af8ee1655023cc103457f52e4679efbe1d81392d8668147e91a931082b3d`,
+with expected NDK `27.2.12479018`. Its preprovisioned SDK/JDK/NDK are a **new
+explicit toolchain baseline**, not historical binary equivalence. Actual
+versions, compiler hashes, SDK component properties and JDK release evidence
+are collected in the job; image environment declarations alone are not proof
+of a successful build. This route does not extract local SDK archives, accept
+licenses on the user's behalf, install a guest, or start an emulator.
 
 The producer script builds the normal
 `mono.runtime+mono.corelib+libs.native+libs.sfx` prerequisites and the existing
@@ -132,7 +176,7 @@ The producer script builds the normal
 This excludes unrelated `libs.pretest` dependencies, not runtime pack assets.
 It does not override audit/dependency versions, invent a package ZIP, or swap ELF
 files. Existing build and sfx closure checks remain active. Global `Version` and
-`PackageVersion` carry `10.0.12-startup.<BuildId>.<JobAttempt>.s<source12>` through
+`PackageVersion` carry the common experiment version through
 normal package generation; evaluated properties and the nuspec are checked.
 RuntimeList framework identity and RID-specific asset paths are checked without
 inventing package-version attributes that the existing manifest does not have.
@@ -155,8 +199,47 @@ archives remain unsigned regardless of verifier output; a valid signature alone
 would still be policy-unqualified. Sidecar filenames and hashes are retained in
 the producer-specific build receipt, not treated as source or guest attestation.
 
-Only `PublishPipelineArtifact` is reachable; no official publishing template,
-BAR/feed/channel registration, symbol promotion, signing task or policy override
-is included. A successful result is **unsigned and unadmitted**. Independent
-normal signing and trust receipts remain mandatory before capture consumption.
-Retained log/receipt artifacts from a failed run are not consumable packs.
+The Windows job selects the existing nonproduction MicroBuild path:
+`enableMicrobuild=true`, `_SignType=test`, `microbuildUseESRP=false`.
+`eng/common/core-templates/steps/install-microbuild.yml` already permits TEST
+signing on Windows and explicitly excludes ESRP service connections for
+nonproduction signing. No signing rule, certificate selector, service
+connection, trust store, permission or ordinary signing template is changed.
+The job invokes normal `eng/common/build.ps1` to restore signing tools and the
+native Mono project, then invokes its sign-only action with the real
+`OfficialBuildId`, `SignType=test` and `DotNetSignType=test`. It does not rebuild
+the product or restore the unrelated libraries/test graph. Audit gates remain
+enabled. Only one diagnostic RID archive is staged at a time; the actual
+normal Arcade `Sign.proj` evaluation must select exactly that archive before
+signing. Neither a final RID property nor a planned command proves selection.
+
+Only 1ES pipeline-artifact outputs are requested. There is no Publish action,
+BAR/feed/channel registration or symbol promotion. Artifact names are
+`mono-android-startup-unsigned-unadmitted-<BuildJobAttempt>` and
+`mono-android-startup-test-signed-unadmitted-<SignJobAttempt>`.
+The latter preserves `build/` byte-for-byte, unsigned packages in
+`build/packages/`, and signed outputs/evidence in `postsign/`. The post-sign
+build-receipt alias is an identical copy, not a rewrite of its relative refs.
+
+The source-specific build root is schema **3**,
+`mono-android-startup-build-receipt`; the signing root is schema **1**,
+`mono-android-startup-sign-receipt`. Both retain actual command observations,
+including failure/launch failure. The latter also records evidence-directory
+roles, real per-RID signing binlogs, evaluated signing selection, and the
+unsigned-to-signed archive binding. Common inventory/signature sidecars remain
+schema 1. `postsign.<id>.json` is a schema-1
+`guest-runtime-package-postsign`, with source/build/input/output/signer
+identities and actual operation-evidence references. Its
+`native-provenance.<id>.json` companion binds the full final debugger-component
+member hash, ELF class/endianness/machine, exact NUL-terminated marker, and raw
+per-RID CMake cache/compiler-identification copies. GNU build IDs are explicitly
+`null` / `not-collected`, not claimed absent. Member deltas are complete
+observations requiring independent policy review, not an allow-all signing rule.
+
+Standard final `dotnet nuget verify --all` success is
+`verified-policy-unqualified`, **not admission or clean-consumer trust**.
+Verification failure produces `produced-verification-failed` receipts and
+retains signed archives, final inventories, sidecars and combined output before
+failing the job. Earlier signer/launch failures retain source-specific failure
+evidence without inventing a completed common receipt. No verification result
+authorizes deployment, package consumption or guest execution.
