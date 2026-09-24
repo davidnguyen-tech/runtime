@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 import re
 import unittest
@@ -37,7 +38,7 @@ EXTERNAL_RUNTIME_FIELDS = (
     ("campaignId", "externalRuntimeCampaignId"),
     ("cohortId", "externalRuntimeCohortId"),
     ("cohortManifestSha256", "externalRuntimeCohortManifestSha256"),
-    ("artifactMap", "externalRuntimeArtifactMap"),
+    ("artifactMapJson", "externalRuntimeArtifactMapJson"),
     ("skipPerfLabUpload", "externalRuntimeSkipPerfLabUpload"),
     ("idempotencyKey", "externalRuntimeIdempotencyKey"),
     ("attempt", "externalRuntimeAttempt"),
@@ -68,14 +69,20 @@ class PerfPipelineTests(unittest.TestCase):
 
         for text in (self.perf, self.perf_slow):
             parameters = text.split("\ntrigger:", 1)[0]
-            self.assertRegex(
+            match = parameter_declaration(
                 parameters,
-                r"(?m)^ *\- name: externalRuntimeArtifactMap\n"
-                r" +type: object\n"
-                r" +default:\n"
-                r" +schemaVersion: 1\n"
-                r" +entries: \[\]$",
+                "externalRuntimeArtifactMapJson",
             )
+            self.assertIsNotNone(match)
+            self.assertEqual(
+                ("string", """'{"schemaVersion":1,"entries":[]}'"""),
+                match.groups(),
+            )
+            self.assertEqual(
+                {"schemaVersion": 1, "entries": []},
+                json.loads(match.group(2)[1:-1]),
+            )
+            self.assertNotIn("externalRuntimeArtifactMap\n", parameters)
 
     def test_disabled_702_graph_retains_native_templates_and_conditions(self):
         self.assertIn(
@@ -149,6 +156,7 @@ class PerfPipelineTests(unittest.TestCase):
         self.assertNotIn("runtimePackageVersion", combined)
         self.assertNotIn("runtimePackagePlatform", combined)
         self.assertNotIn("runtimePackage:", combined)
+        self.assertNotIn("artifactMap:", combined)
 
 
 if __name__ == "__main__":

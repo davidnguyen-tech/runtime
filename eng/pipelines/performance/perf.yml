@@ -51,11 +51,9 @@ parameters:
     type: string
     default: ''
 
-  - name: externalRuntimeArtifactMap
-    type: object
-    default:
-      schemaVersion: 1
-      entries: []
+  - name: externalRuntimeArtifactMapJson
+    type: string
+    default: '{"schemaVersion":1,"entries":[]}'
 
   - name: externalRuntimeSkipPerfLabUpload
     type: boolean
@@ -155,7 +153,7 @@ extends:
               campaignId: ${{ parameters.externalRuntimeCampaignId }}
               cohortId: ${{ parameters.externalRuntimeCohortId }}
               cohortManifestSha256: ${{ parameters.externalRuntimeCohortManifestSha256 }}
-              artifactMap: ${{ parameters.externalRuntimeArtifactMap }}
+              artifactMapJson: ${{ parameters.externalRuntimeArtifactMapJson }}
               skipPerfLabUpload: ${{ parameters.externalRuntimeSkipPerfLabUpload }}
               idempotencyKey: ${{ parameters.externalRuntimeIdempotencyKey }}
               attempt: ${{ parameters.externalRuntimeAttempt }}
@@ -182,7 +180,7 @@ extends:
                 campaignId: ${{ parameters.externalRuntimeCampaignId }}
                 cohortId: ${{ parameters.externalRuntimeCohortId }}
                 cohortManifestSha256: ${{ parameters.externalRuntimeCohortManifestSha256 }}
-                artifactMap: ${{ parameters.externalRuntimeArtifactMap }}
+                artifactMapJson: ${{ parameters.externalRuntimeArtifactMapJson }}
                 skipPerfLabUpload: ${{ parameters.externalRuntimeSkipPerfLabUpload }}
                 idempotencyKey: ${{ parameters.externalRuntimeIdempotencyKey }}
                 attempt: ${{ parameters.externalRuntimeAttempt }}
