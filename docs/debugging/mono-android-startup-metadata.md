@@ -159,8 +159,12 @@ the moving release tag in preview/run requests. A requested REST resource versio
 alone did not enforce the template resolution observed in run 3087006; actual
 resource readback must match the reviewed commit. Azure Pipelines supports
 [commit SHA repository refs](https://learn.microsoft.com/en-us/azure/devops/pipelines/process/templates#store-templates-in-other-repositories).
-The selection uses an `iif` expression within the `ref` scalar; conditional
-mapping insertion around repository resource properties is not supported.
+The resource `ref` directly references an internal template parameter restricted
+to the reviewed SHA and the default release tag. Only the existing official
+diagnostic dispatch branch passes the fixed SHA; there is no root/user ref
+selector. Earlier conditional mapping and `iif` forms failed provider preview
+in this nested route; this does not establish that `iif` is universally unsupported.
+The direct-parameter form still requires provider preview and resource readback.
 The diagnostic helper compares the
 provider's resolved resource version with that expected commit and the actual
 resource checkout, and hashes the checked-out entry template. The ordinary

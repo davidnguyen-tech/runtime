@@ -263,7 +263,8 @@ class ProducerTests(unittest.TestCase):
         parameter = "  - name: enableMonoStartupMetadata\n    type: boolean\n    default: false\n"
         forwarding = (
             "\n    ${{ if and(eq(parameters.templatePath, 'template1es.yml'), parameters.enableMonoStartupMetadata) }}:\n"
-            "      enableMonoStartupMetadata: true"
+            "      enableMonoStartupMetadata: true\n"
+            f"      oneESTemplateRef: {producer.EXPECTED_1ES_COMMIT}"
         )
         inclusion = (
             "      ${{ if parameters.enableMonoStartupMetadata }}:\n"
@@ -271,10 +272,15 @@ class ProducerTests(unittest.TestCase):
             "          include:\n"
             "          - repository: 1ESPipelineTemplates\n"
         )
-        pin = (
-            "    ref: ${{ iif(eq(parameters.enableMonoStartupMetadata, true), "
-            f"'{producer.EXPECTED_1ES_COMMIT}', 'refs/tags/release') }}}}\n"
+        closed_ref = (
+            "  - name: oneESTemplateRef\n"
+            "    type: string\n"
+            "    default: refs/tags/release\n"
+            "    values:\n"
+            "      - refs/tags/release\n"
+            f"      - {producer.EXPECTED_1ES_COMMIT}\n"
         )
+        pin = "    ref: ${{ parameters.oneESTemplateRef }}\n"
         for name, addition in (("templateDispatch.yml", forwarding), ("template1es.yml", inclusion)):
             path = "eng/pipelines/common/templates/" + name
             baseline = producer.subprocess.run([
@@ -286,6 +292,7 @@ class ProducerTests(unittest.TestCase):
             self.assertEqual(current.count(parameter), 1)
             self.assertEqual(current.count(addition), 1)
             if name == "template1es.yml":
+                self.assertEqual(current.count(closed_ref), 1)
                 self.assertEqual(current.count(pin), 1)
                 resource = (
                     "resources:\n  repositories:\n"
@@ -296,8 +303,12 @@ class ProducerTests(unittest.TestCase):
                 self.assertEqual(current.split("resources:\n", 1)[1].split("\nextends:", 1)[0],
                                  (resource + pin).split("resources:\n", 1)[1])
                 self.assertIn("    sdl:\n" + inclusion + "      codeql:\n", current)
-                current = current.replace(pin, "    ref: refs/tags/release\n")
+                current = current.replace(closed_ref, "").replace(pin, "    ref: refs/tags/release\n")
             self.assertEqual(current.replace(parameter, "").replace(addition, ""), baseline.stdout)
+        for path in ("eng/pipelines/runtime-official.yml",
+                     "eng/pipelines/common/templates/pipeline-with-resources.yml",
+                     "eng/pipelines/common/templates/templatePublic.yml"):
+            self.assertNotIn("oneESTemplateRef", (ROOT / path).read_text())
         graph = json.loads((ROOT / "eng/pipelines/mono-android-startup-metadata.yml").read_text())
         stage, = graph["stages"]
         checked_out = {step["checkout"] for job in stage["jobs"]

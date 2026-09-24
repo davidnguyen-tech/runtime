@@ -16,3 +16,4 @@ extends:
     containers: ${{ parameters.containers }}
     ${{ if and(eq(parameters.templatePath, 'template1es.yml'), parameters.enableMonoStartupMetadata) }}:
       enableMonoStartupMetadata: true
+      oneESTemplateRef: 8bb89477eb3e61becfe1ab21442fe9aefb031b35
