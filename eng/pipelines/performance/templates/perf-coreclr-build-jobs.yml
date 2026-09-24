@@ -7,7 +7,6 @@ parameters:
     android_arm64: false
     coreclr_r2r_interpreter: false
     externalRuntimeMode: false
-    externalRuntime: {}
 
 jobs:
   # The performance adapter preflights a complete external artifact map before admitting consumers.
@@ -43,7 +42,7 @@ jobs:
               artifactName: BuildArtifacts_$(osGroup)$(osSubgroup)_$(archType)_$(_BuildConfig)_coreclr
               displayName: Build Assets
 
-  - ${{ if and(ne(parameters.externalRuntimeMode, true), eq(parameters.android_arm64, true)) }}:
+  - ${{ if eq(parameters.android_arm64, true) }}:
     # build CoreCLR Android scenarios
     - template: /eng/pipelines/common/platform-matrix.yml
       parameters:

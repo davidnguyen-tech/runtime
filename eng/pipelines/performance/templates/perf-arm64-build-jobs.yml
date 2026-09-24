@@ -3,7 +3,6 @@ parameters:
   coreclr: false
   monoAot: false
   externalRuntimeMode: false
-  externalRuntime: {}
 
 jobs:
   # build mono + monoAot
@@ -19,4 +18,3 @@ jobs:
         linux_arm64: true
         windows_arm64: true
         externalRuntimeMode: ${{ parameters.externalRuntimeMode }}
-        externalRuntime: ${{ parameters.externalRuntime }}
