@@ -272,10 +272,8 @@ class ProducerTests(unittest.TestCase):
             "          - repository: 1ESPipelineTemplates\n"
         )
         pin = (
-            "    ${{ if parameters.enableMonoStartupMetadata }}:\n"
-            f"      ref: {producer.EXPECTED_1ES_COMMIT}\n"
-            "    ${{ else }}:\n"
-            "      ref: refs/tags/release\n"
+            "    ref: ${{ iif(eq(parameters.enableMonoStartupMetadata, true), "
+            f"'{producer.EXPECTED_1ES_COMMIT}', 'refs/tags/release') }}}}\n"
         )
         for name, addition in (("templateDispatch.yml", forwarding), ("template1es.yml", inclusion)):
             path = "eng/pipelines/common/templates/" + name

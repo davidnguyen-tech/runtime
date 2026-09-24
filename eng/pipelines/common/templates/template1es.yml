@@ -18,10 +18,7 @@ resources:
   - repository: 1ESPipelineTemplates
     type: git
     name: 1ESPipelineTemplates/1ESPipelineTemplates
-    ${{ if parameters.enableMonoStartupMetadata }}:
-      ref: 8bb89477eb3e61becfe1ab21442fe9aefb031b35
-    ${{ else }}:
-      ref: refs/tags/release
+    ref: ${{ iif(eq(parameters.enableMonoStartupMetadata, true), '8bb89477eb3e61becfe1ab21442fe9aefb031b35', 'refs/tags/release') }}
 
 extends:
   template: v1/1ES.Official.PipelineTemplate.yml@1ESPipelineTemplates
