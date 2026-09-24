@@ -3,41 +3,71 @@ parameters:
     type: boolean
     default: false
 
-  - name: runtimePackageMode
+  - name: externalRuntimeMode
     type: boolean
     default: false
 
-  - name: runtimePackageVersion
+  - name: externalRuntimeContractVersion
     type: string
     default: ''
 
-  - name: runtimePackageRid
-    type: string
-    default: linux-x64
-    values:
-    - linux-x64
-
-  - name: runtimePackageSha512
+  - name: externalRuntimeCoverageRowsSha256
     type: string
     default: ''
 
-  - name: runtimePackageSourceCommit
+  - name: externalRuntimeProducerDefinitionId
+    type: number
+    default: 0
+
+  - name: externalRuntimeProducerBuildId
+    type: number
+    default: 0
+
+  - name: externalRuntimeProducerBuildNumber
     type: string
     default: ''
 
-  - name: runtimePackageSourceBranch
+  - name: externalRuntimeSourceRepository
     type: string
     default: ''
 
-  - name: runtimePackageProducerBuildId
+  - name: externalRuntimeSourceBranch
     type: string
     default: ''
 
-  - name: runtimePackagePlatform
+  - name: externalRuntimeSourceCommit
     type: string
-    default: linux_x64
-    values:
-    - linux_x64
+    default: ''
+
+  - name: externalRuntimeCampaignId
+    type: string
+    default: ''
+
+  - name: externalRuntimeCohortId
+    type: string
+    default: ''
+
+  - name: externalRuntimeCohortManifestSha256
+    type: string
+    default: ''
+
+  - name: externalRuntimeArtifactMap
+    type: object
+    default:
+      schemaVersion: 1
+      entries: []
+
+  - name: externalRuntimeSkipPerfLabUpload
+    type: boolean
+    default: true
+
+  - name: externalRuntimeIdempotencyKey
+    type: string
+    default: ''
+
+  - name: externalRuntimeAttempt
+    type: number
+    default: 1
 
 trigger:
   batch: true
@@ -103,39 +133,59 @@ extends:
             timeoutInMinutes: 540
             allowNoHelixJobs: true
 
-      - ${{ if eq(parameters.runtimePackageMode, false) }}:
-        - template: /eng/pipelines/runtime-wasm-perf-jobs.yml@performance
-          parameters:
-            #${{ and(ne(variables['System.TeamProject'], 'public'), in(variables['Build.Reason'], 'Schedule')) }}:
-            #  runProfile: 'non-v8'
-            ${{ if eq(variables['System.TeamProject'], 'internal') }}:
-              runProfile: 'v8'
-            runtimeRepoAlias: self
-            performanceRepoAlias: performance
-            jobParameters:
-              ${{ if parameters.onlySanityCheck }}:
-                onlySanityCheck: true
+      - template: /eng/pipelines/runtime-wasm-perf-jobs.yml@performance
+        parameters:
+          #${{ and(ne(variables['System.TeamProject'], 'public'), in(variables['Build.Reason'], 'Schedule')) }}:
+          #  runProfile: 'non-v8'
+          ${{ if eq(variables['System.TeamProject'], 'internal') }}:
+            runProfile: 'v8'
+          runtimeRepoAlias: self
+          performanceRepoAlias: performance
+          ${{ if eq(parameters.externalRuntimeMode, true) }}:
+            externalRuntimeMode: true
+            externalRuntime:
+              contractVersion: ${{ parameters.externalRuntimeContractVersion }}
+              coverageRowsSha256: ${{ parameters.externalRuntimeCoverageRowsSha256 }}
+              producerDefinitionId: ${{ parameters.externalRuntimeProducerDefinitionId }}
+              producerBuildId: ${{ parameters.externalRuntimeProducerBuildId }}
+              producerBuildNumber: ${{ parameters.externalRuntimeProducerBuildNumber }}
+              sourceRepository: ${{ parameters.externalRuntimeSourceRepository }}
+              sourceBranch: ${{ parameters.externalRuntimeSourceBranch }}
+              sourceCommit: ${{ parameters.externalRuntimeSourceCommit }}
+              campaignId: ${{ parameters.externalRuntimeCampaignId }}
+              cohortId: ${{ parameters.externalRuntimeCohortId }}
+              cohortManifestSha256: ${{ parameters.externalRuntimeCohortManifestSha256 }}
+              artifactMap: ${{ parameters.externalRuntimeArtifactMap }}
+              skipPerfLabUpload: ${{ parameters.externalRuntimeSkipPerfLabUpload }}
+              idempotencyKey: ${{ parameters.externalRuntimeIdempotencyKey }}
+              attempt: ${{ parameters.externalRuntimeAttempt }}
+          jobParameters:
+            ${{ if parameters.onlySanityCheck }}:
+              onlySanityCheck: true
 
-      - ${{ if and(eq(parameters.runtimePackageMode, false), ne(variables['System.TeamProject'], 'public'), notin(variables['Build.Reason'], 'Schedule')) }}:
+      - ${{ if and(ne(variables['System.TeamProject'], 'public'), notin(variables['Build.Reason'], 'Schedule')) }}:
         - template: /eng/pipelines/runtime-perf-jobs.yml@performance
           parameters:
             runtimeRepoAlias: self
             performanceRepoAlias: performance
+            ${{ if eq(parameters.externalRuntimeMode, true) }}:
+              externalRuntimeMode: true
+              externalRuntime:
+                contractVersion: ${{ parameters.externalRuntimeContractVersion }}
+                coverageRowsSha256: ${{ parameters.externalRuntimeCoverageRowsSha256 }}
+                producerDefinitionId: ${{ parameters.externalRuntimeProducerDefinitionId }}
+                producerBuildId: ${{ parameters.externalRuntimeProducerBuildId }}
+                producerBuildNumber: ${{ parameters.externalRuntimeProducerBuildNumber }}
+                sourceRepository: ${{ parameters.externalRuntimeSourceRepository }}
+                sourceBranch: ${{ parameters.externalRuntimeSourceBranch }}
+                sourceCommit: ${{ parameters.externalRuntimeSourceCommit }}
+                campaignId: ${{ parameters.externalRuntimeCampaignId }}
+                cohortId: ${{ parameters.externalRuntimeCohortId }}
+                cohortManifestSha256: ${{ parameters.externalRuntimeCohortManifestSha256 }}
+                artifactMap: ${{ parameters.externalRuntimeArtifactMap }}
+                skipPerfLabUpload: ${{ parameters.externalRuntimeSkipPerfLabUpload }}
+                idempotencyKey: ${{ parameters.externalRuntimeIdempotencyKey }}
+                attempt: ${{ parameters.externalRuntimeAttempt }}
             jobParameters:
               ${{ if parameters.onlySanityCheck }}:
                 onlySanityCheck: true
-
-      - ${{ if and(eq(parameters.runtimePackageMode, true), ne(variables['System.TeamProject'], 'public')) }}:
-        - template: /eng/pipelines/runtime-perf-jobs.yml@performance
-          parameters:
-            runtimeRepoAlias: self
-            performanceRepoAlias: performance
-            runtimePackageMode: true
-            runtimePackage:
-              version: ${{ parameters.runtimePackageVersion }}
-              rid: ${{ parameters.runtimePackageRid }}
-              sha512: ${{ parameters.runtimePackageSha512 }}
-              sourceCommit: ${{ parameters.runtimePackageSourceCommit }}
-              sourceBranch: ${{ parameters.runtimePackageSourceBranch }}
-              producerBuildId: ${{ parameters.runtimePackageProducerBuildId }}
-              platform: ${{ parameters.runtimePackagePlatform }}

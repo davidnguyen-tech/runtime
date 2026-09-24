@@ -8,6 +8,56 @@ parameters:
 - name: onlySanityCheck
   type: boolean
   default: false
+- name: externalRuntimeMode
+  type: boolean
+  default: false
+- name: externalRuntimeContractVersion
+  type: string
+  default: ''
+- name: externalRuntimeCoverageRowsSha256
+  type: string
+  default: ''
+- name: externalRuntimeProducerDefinitionId
+  type: number
+  default: 0
+- name: externalRuntimeProducerBuildId
+  type: number
+  default: 0
+- name: externalRuntimeProducerBuildNumber
+  type: string
+  default: ''
+- name: externalRuntimeSourceRepository
+  type: string
+  default: ''
+- name: externalRuntimeSourceBranch
+  type: string
+  default: ''
+- name: externalRuntimeSourceCommit
+  type: string
+  default: ''
+- name: externalRuntimeCampaignId
+  type: string
+  default: ''
+- name: externalRuntimeCohortId
+  type: string
+  default: ''
+- name: externalRuntimeCohortManifestSha256
+  type: string
+  default: ''
+- name: externalRuntimeArtifactMap
+  type: object
+  default:
+    schemaVersion: 1
+    entries: []
+- name: externalRuntimeSkipPerfLabUpload
+  type: boolean
+  default: true
+- name: externalRuntimeIdempotencyKey
+  type: string
+  default: ''
+- name: externalRuntimeAttempt
+  type: number
+  default: 1
 
 trigger:
   batch: true
@@ -32,6 +82,8 @@ resources:
     - repository: performance
       type: git
       name: internal/dotnet-performance
+      # Restore the merged/default performance ref before merging this runtime branch.
+      ref: refs/heads/davidnguyen-tech-consume-runtimelab-gc-experiment
 
 variables:
   - template: /eng/pipelines/common/variables.yml
@@ -71,6 +123,24 @@ extends:
               runPrivateJobs: true
             runtimeRepoAlias: self
             performanceRepoAlias: performance
+            ${{ if eq(parameters.externalRuntimeMode, true) }}:
+              externalRuntimeMode: true
+              externalRuntime:
+                contractVersion: ${{ parameters.externalRuntimeContractVersion }}
+                coverageRowsSha256: ${{ parameters.externalRuntimeCoverageRowsSha256 }}
+                producerDefinitionId: ${{ parameters.externalRuntimeProducerDefinitionId }}
+                producerBuildId: ${{ parameters.externalRuntimeProducerBuildId }}
+                producerBuildNumber: ${{ parameters.externalRuntimeProducerBuildNumber }}
+                sourceRepository: ${{ parameters.externalRuntimeSourceRepository }}
+                sourceBranch: ${{ parameters.externalRuntimeSourceBranch }}
+                sourceCommit: ${{ parameters.externalRuntimeSourceCommit }}
+                campaignId: ${{ parameters.externalRuntimeCampaignId }}
+                cohortId: ${{ parameters.externalRuntimeCohortId }}
+                cohortManifestSha256: ${{ parameters.externalRuntimeCohortManifestSha256 }}
+                artifactMap: ${{ parameters.externalRuntimeArtifactMap }}
+                skipPerfLabUpload: ${{ parameters.externalRuntimeSkipPerfLabUpload }}
+                idempotencyKey: ${{ parameters.externalRuntimeIdempotencyKey }}
+                attempt: ${{ parameters.externalRuntimeAttempt }}
             jobParameters:
               ${{ if parameters.onlySanityCheck }}:
                 onlySanityCheck: true

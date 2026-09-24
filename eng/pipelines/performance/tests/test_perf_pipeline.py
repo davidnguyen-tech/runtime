@@ -4,111 +4,151 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[4]
-PIPELINE = ROOT / "eng" / "pipelines" / "performance" / "perf.yml"
+PERF = ROOT / "eng" / "pipelines" / "performance" / "perf.yml"
+PERF_SLOW = ROOT / "eng" / "pipelines" / "performance" / "perf-slow.yml"
 
-EXPERIMENT_PARAMETERS = {
-    "runtimePackageMode": "false",
-    "runtimePackageVersion": "''",
-    "runtimePackageRid": "linux-x64",
-    "runtimePackageSha512": "''",
-    "runtimePackageSourceCommit": "''",
-    "runtimePackageSourceBranch": "''",
-    "runtimePackageProducerBuildId": "''",
-    "runtimePackagePlatform": "linux_x64",
+COMMON_PARAMETERS = {
+    "externalRuntimeMode": ("boolean", "false"),
+    "externalRuntimeContractVersion": ("string", "''"),
+    "externalRuntimeCoverageRowsSha256": ("string", "''"),
+    "externalRuntimeProducerDefinitionId": ("number", "0"),
+    "externalRuntimeProducerBuildId": ("number", "0"),
+    "externalRuntimeProducerBuildNumber": ("string", "''"),
+    "externalRuntimeSourceRepository": ("string", "''"),
+    "externalRuntimeSourceBranch": ("string", "''"),
+    "externalRuntimeSourceCommit": ("string", "''"),
+    "externalRuntimeCampaignId": ("string", "''"),
+    "externalRuntimeCohortId": ("string", "''"),
+    "externalRuntimeCohortManifestSha256": ("string", "''"),
+    "externalRuntimeSkipPerfLabUpload": ("boolean", "true"),
+    "externalRuntimeIdempotencyKey": ("string", "''"),
+    "externalRuntimeAttempt": ("number", "1"),
 }
 
-RUNTIME_PACKAGE_FIELDS = (
-    ("version", "runtimePackageVersion"),
-    ("rid", "runtimePackageRid"),
-    ("sha512", "runtimePackageSha512"),
-    ("sourceCommit", "runtimePackageSourceCommit"),
-    ("sourceBranch", "runtimePackageSourceBranch"),
-    ("producerBuildId", "runtimePackageProducerBuildId"),
-    ("platform", "runtimePackagePlatform"),
+EXTERNAL_RUNTIME_FIELDS = (
+    ("contractVersion", "externalRuntimeContractVersion"),
+    ("coverageRowsSha256", "externalRuntimeCoverageRowsSha256"),
+    ("producerDefinitionId", "externalRuntimeProducerDefinitionId"),
+    ("producerBuildId", "externalRuntimeProducerBuildId"),
+    ("producerBuildNumber", "externalRuntimeProducerBuildNumber"),
+    ("sourceRepository", "externalRuntimeSourceRepository"),
+    ("sourceBranch", "externalRuntimeSourceBranch"),
+    ("sourceCommit", "externalRuntimeSourceCommit"),
+    ("campaignId", "externalRuntimeCampaignId"),
+    ("cohortId", "externalRuntimeCohortId"),
+    ("cohortManifestSha256", "externalRuntimeCohortManifestSha256"),
+    ("artifactMap", "externalRuntimeArtifactMap"),
+    ("skipPerfLabUpload", "externalRuntimeSkipPerfLabUpload"),
+    ("idempotencyKey", "externalRuntimeIdempotencyKey"),
+    ("attempt", "externalRuntimeAttempt"),
 )
+
+
+def parameter_declaration(text, name):
+    parameters = text.split("\ntrigger:", 1)[0]
+    return re.search(
+        rf"(?m)^ *\- name: {name}\n +type: ([a-z]+)\n +default: (.+)$",
+        parameters,
+    )
 
 
 class PerfPipelineTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.text = PIPELINE.read_text(encoding="utf-8")
-        candidate_match = re.search(
-            r"^      - \$\{\{ if and\(eq\(parameters\.runtimePackageMode, true\).*",
-            cls.text,
-            re.MULTILINE | re.DOTALL,
-        )
-        if candidate_match is None:
-            raise AssertionError("The runtime package candidate block is missing.")
-        cls.candidate = candidate_match.group(0)
+        cls.perf = PERF.read_text(encoding="utf-8")
+        cls.perf_slow = PERF_SLOW.read_text(encoding="utf-8")
 
-    def test_experiment_parameters_default_off_with_reviewed_platform(self):
-        for name, expected_default in EXPERIMENT_PARAMETERS.items():
-            with self.subTest(parameter=name):
-                match = re.search(
-                    rf"  - name: {name}\n    type: (boolean|string)\n    default: (.+)",
-                    self.text,
-                )
-                self.assertIsNotNone(match)
-                self.assertEqual(expected_default, match.group(2))
+    def test_common_external_runtime_parameters_are_typed_and_default_off(self):
+        for path, text in ((PERF, self.perf), (PERF_SLOW, self.perf_slow)):
+            for name, (expected_type, expected_default) in COMMON_PARAMETERS.items():
+                with self.subTest(path=path.name, parameter=name):
+                    match = parameter_declaration(text, name)
+                    self.assertIsNotNone(match)
+                    self.assertEqual((expected_type, expected_default), match.groups())
 
-        for name in ("runtimePackageRid", "runtimePackagePlatform"):
+        for text in (self.perf, self.perf_slow):
+            parameters = text.split("\ntrigger:", 1)[0]
             self.assertRegex(
-                self.text,
-                rf"  - name: {name}\n"
-                r"    type: string\n"
-                r"    default: linux[-_]x64\n"
-                r"    values:\n"
-                r"    - linux[-_]x64",
+                parameters,
+                r"(?m)^ *\- name: externalRuntimeArtifactMap\n"
+                r" +type: object\n"
+                r" +default:\n"
+                r" +schemaVersion: 1\n"
+                r" +entries: \[\]$",
             )
 
-    def test_default_flow_retains_standard_wasm_and_runtime_templates(self):
+    def test_disabled_702_graph_retains_native_templates_and_conditions(self):
         self.assertIn(
-            "- ${{ if eq(parameters.runtimePackageMode, false) }}:\n"
-            "        - template: /eng/pipelines/runtime-wasm-perf-jobs.yml@performance",
-            self.text,
+            "- template: /eng/pipelines/runtime-wasm-perf-jobs.yml@performance",
+            self.perf,
         )
         self.assertIn(
-            "- ${{ if and(eq(parameters.runtimePackageMode, false), "
-            "ne(variables['System.TeamProject'], 'public'), "
+            "- ${{ if and(ne(variables['System.TeamProject'], 'public'), "
             "notin(variables['Build.Reason'], 'Schedule')) }}:\n"
             "        - template: /eng/pipelines/runtime-perf-jobs.yml@performance",
-            self.text,
+            self.perf,
         )
-        self.assertIn("enableHelixJobMonitor", self.text)
-        self.assertIn("/eng/common/core-templates/job/helix-job-monitor.yml", self.text)
+        self.assertNotIn("if eq(parameters.externalRuntimeMode, false)", self.perf)
+        self.assertIn("/eng/common/core-templates/job/helix-job-monitor.yml", self.perf)
 
-    def test_candidate_is_one_ordinary_linux_x64_viper_lane(self):
-        self.assertNotIn("runtime-wasm-perf-jobs.yml", self.candidate)
-        self.assertEqual(1, self.candidate.count("runtimePackageMode: true"))
-        self.assertNotIn("viperMicro:", self.candidate)
-        self.assertNotIn("monoMicro:", self.candidate)
-        self.assertNotIn("androidCoreclrJit:", self.candidate)
-        self.assertNotIn("additionalJobIdentifier:", self.candidate)
-        self.assertNotIn("experimentName:", self.candidate)
-
-    def test_candidate_forwards_only_structured_package_identity(self):
-        self.assertIn("runtimePackageMode: true", self.candidate)
-        self.assertIn("runtimePackage:", self.candidate)
-        for field, parameter in RUNTIME_PACKAGE_FIELDS:
-            with self.subTest(field=field):
-                self.assertIn(
-                    f"{field}: ${{{{ parameters.{parameter} }}}}",
-                    self.candidate,
-                )
-        self.assertNotIn("runEnvVars:", self.candidate)
-        self.assertNotIn("jobParameters:", self.candidate)
-        self.assertNotIn("runtimePackageFeed", self.text)
-        self.assertNotRegex(self.text, r"name: runtimePackage(?:Environment|Env|RunEnvVars)")
-
-    def test_feature_branch_pins_matching_performance_contract(self):
+    def test_disabled_1012_graph_retains_native_selectors(self):
         self.assertIn(
-            "ref: refs/heads/davidnguyen-tech-consume-runtimelab-gc-experiment",
-            self.text,
+            "${{ if or(in(variables['Build.Reason'], 'Schedule'), "
+            "parameters.runScheduledJobs) }}:",
+            self.perf_slow,
         )
         self.assertIn(
-            "Restore the merged/default performance ref before merging this runtime branch.",
-            self.text,
+            "${{ if or(notin(variables['Build.Reason'], 'Schedule', 'Manual'), "
+            "parameters.runPrivateJobs) }}:",
+            self.perf_slow,
         )
+        self.assertIn(
+            "- template: /eng/pipelines/runtime-slow-perf-jobs.yml@performance",
+            self.perf_slow,
+        )
+        self.assertNotIn("if eq(parameters.externalRuntimeMode, false)", self.perf_slow)
+
+    def test_complete_manifest_is_forwarded_without_row_filtering(self):
+        expected_templates = {
+            self.perf: (
+                "runtime-wasm-perf-jobs.yml@performance",
+                "runtime-perf-jobs.yml@performance",
+            ),
+            self.perf_slow: ("runtime-slow-perf-jobs.yml@performance",),
+        }
+        for text, templates in expected_templates.items():
+            for template in templates:
+                with self.subTest(template=template):
+                    start = text.index(f"/eng/pipelines/{template}")
+                    block = text[start : start + 2600]
+                    self.assertIn("externalRuntimeMode: true", block)
+                    self.assertIn("externalRuntime:", block)
+                    for field, parameter in EXTERNAL_RUNTIME_FIELDS:
+                        self.assertIn(
+                            f"{field}: ${{{{ parameters.{parameter} }}}}",
+                            block,
+                        )
+                    self.assertNotIn("each entry in", block)
+                    self.assertNotIn("queueEligible", block)
+                    self.assertNotIn("availability.status", block)
+
+    def test_feature_branch_pins_both_performance_resources_for_preview(self):
+        for text in (self.perf, self.perf_slow):
+            self.assertIn(
+                "ref: refs/heads/davidnguyen-tech-consume-runtimelab-gc-experiment",
+                text,
+            )
+            self.assertIn(
+                "Restore the merged/default performance ref before merging this runtime branch.",
+                text,
+            )
+
+    def test_legacy_one_lane_contract_is_removed(self):
+        combined = self.perf + self.perf_slow
+        self.assertNotIn("runtimePackageMode", combined)
+        self.assertNotIn("runtimePackageVersion", combined)
+        self.assertNotIn("runtimePackagePlatform", combined)
+        self.assertNotIn("runtimePackage:", combined)
 
 
 if __name__ == "__main__":
