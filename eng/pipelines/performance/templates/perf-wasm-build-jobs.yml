@@ -1,3 +1,7 @@
+parameters:
+  externalRuntimeMode: false
+  externalRuntime: {}
+
 jobs:
 # Build Mono runtime for browser-wasm (used by default wasm benchmarks)
 - template: /eng/pipelines/common/platform-matrix.yml

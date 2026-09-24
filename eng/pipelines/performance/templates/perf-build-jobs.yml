@@ -1,5 +1,7 @@
 parameters:
   perfBranch: 'main' # Currently only used for building the BDN App
+  externalRuntimeMode: false
+  externalRuntime: {}
 
 jobs:
   # build coreclr and libraries
@@ -11,6 +13,8 @@ jobs:
       windows_x86: true
       android_arm64: true
       coreclr_r2r_interpreter: true
+      externalRuntimeMode: ${{ parameters.externalRuntimeMode }}
+      externalRuntime: ${{ parameters.externalRuntime }}
 
   # build mono for AOT
   - template: /eng/pipelines/performance/templates/perf-mono-build-jobs.yml
