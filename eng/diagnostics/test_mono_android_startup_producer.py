@@ -159,24 +159,31 @@ class ProducerTests(unittest.TestCase):
             f"          image: {normal_image}\n"
         )
         self.assertEqual(current.count(conditional), 1)
-        forwarding = "      enableMonoStartupMetadata: ${{ parameters.enableMonoStartupMetadata }}\n"
-        self.assertEqual(current.count(forwarding), 1)
-        self.assertIn("    ${{ if parameters.isOfficialBuild }}:\n"
-                      "      templatePath: template1es.yml\n" + forwarding +
+        selection = (
+            "      ${{ if parameters.enableMonoStartupMetadata }}:\n"
+            "        templatePath: template1es-mono-startup.yml\n"
+            "      ${{ else }}:\n"
+            "        templatePath: template1es.yml\n"
+        )
+        self.assertEqual(current.count(selection), 1)
+        self.assertIn("    ${{ if parameters.isOfficialBuild }}:\n" + selection +
                       "    ${{ else }}:\n"
                       "      templatePath: templatePublic.yml\n", current)
         for official in (False, True):
             for enabled in (False, True):
                 with self.subTest(official=official, enabled=enabled):
                     image = producer.PRODUCER_IMAGE if official and enabled else normal_image
-                    resolved = current.replace(parameter, "").replace(forwarding, "").replace(
+                    template = "template1es-mono-startup.yml" if official and enabled else "template1es.yml"
+                    resolved = current.replace(parameter, "").replace(selection, f"      templatePath: {template}\n").replace(
                         conditional, f"      android:\n        image: {image}\n")
-                    self.assertEqual(resolved, baseline.stdout.replace(normal, f"      android:\n        image: {image}\n"))
+                    expected = baseline.stdout.replace(normal, f"      android:\n        image: {image}\n").replace(
+                        "      templatePath: template1es.yml\n", f"      templatePath: {template}\n")
+                    self.assertEqual(resolved, expected)
         graph = json.loads((ROOT / "eng/pipelines/mono-android-startup-metadata.yml").read_text())
         stage, = graph["stages"]
         self.assertEqual(next(item["value"] for item in stage["variables"] if item["name"] == "StartupMetadataImage"),
                          producer.PRODUCER_IMAGE)
-        self.assertNotIn("enableMonoStartupMetadata", current.replace(forwarding, "").split(
+        self.assertNotIn("enableMonoStartupMetadata", current.replace(selection, "").split(
             "    containers:\n", 1)[0].split("extends:\n", 1)[1])
 
     def test_host_checkout_and_container_path_execution(self):
@@ -259,56 +266,55 @@ class ProducerTests(unittest.TestCase):
                         if failure == "producer-exit":
                             self.assertEqual(result.returncode, 7)
 
-    def test_diagnostic_template_pin_sdl_coverage_and_flag_dispatch(self):
-        parameter = "  - name: enableMonoStartupMetadata\n    type: boolean\n    default: false\n"
-        forwarding = (
-            "\n    ${{ if and(eq(parameters.templatePath, 'template1es.yml'), parameters.enableMonoStartupMetadata) }}:\n"
-            "      enableMonoStartupMetadata: true\n"
-            f"      oneESTemplateRef: {producer.EXPECTED_1ES_COMMIT}"
-        )
+    def test_literal_template_wrappers_share_unchanged_policy(self):
+        directory = ROOT / "eng/pipelines/common/templates"
         inclusion = (
             "      ${{ if parameters.enableMonoStartupMetadata }}:\n"
             "        sourceRepositoriesToScan:\n"
             "          include:\n"
             "          - repository: 1ESPipelineTemplates\n"
         )
-        closed_ref = (
-            "  - name: oneESTemplateRef\n"
-            "    type: string\n"
-            "    default: refs/tags/release\n"
-            "    values:\n"
-            "      - refs/tags/release\n"
-            f"      - {producer.EXPECTED_1ES_COMMIT}\n"
-        )
-        pin = "    ref: ${{ parameters.oneESTemplateRef }}\n"
-        for name, addition in (("templateDispatch.yml", forwarding), ("template1es.yml", inclusion)):
+        originals = {}
+        for name in ("templateDispatch.yml", "template1es.yml", "templatePublic.yml"):
             path = "eng/pipelines/common/templates/" + name
             baseline = producer.subprocess.run([
                 "git", "show", producer.BASELINE + ":" + path,
             ], cwd=ROOT, env=dict(producer.os.environ), stdout=producer.subprocess.PIPE,
                 stderr=producer.subprocess.PIPE, text=True)
             self.assertEqual(baseline.returncode, 0, baseline.stderr)
-            current = (ROOT / path).read_text()
-            self.assertEqual(current.count(parameter), 1)
-            self.assertEqual(current.count(addition), 1)
-            if name == "template1es.yml":
-                self.assertEqual(current.count(closed_ref), 1)
-                self.assertEqual(current.count(pin), 1)
-                resource = (
-                    "resources:\n  repositories:\n"
-                    "  - repository: 1ESPipelineTemplates\n"
-                    "    type: git\n"
-                    "    name: 1ESPipelineTemplates/1ESPipelineTemplates\n"
-                )
-                self.assertEqual(current.split("resources:\n", 1)[1].split("\nextends:", 1)[0],
-                                 (resource + pin).split("resources:\n", 1)[1])
-                self.assertIn("    sdl:\n" + inclusion + "      codeql:\n", current)
-                current = current.replace(closed_ref, "").replace(pin, "    ref: refs/tags/release\n")
-            self.assertEqual(current.replace(parameter, "").replace(addition, ""), baseline.stdout)
-        for path in ("eng/pipelines/runtime-official.yml",
-                     "eng/pipelines/common/templates/pipeline-with-resources.yml",
-                     "eng/pipelines/common/templates/templatePublic.yml"):
-            self.assertNotIn("oneESTemplateRef", (ROOT / path).read_text())
+            originals[name] = baseline.stdout
+            if name != "template1es.yml":
+                self.assertEqual((directory / name).read_text(), baseline.stdout)
+        normal = (directory / "template1es.yml").read_text()
+        diagnostic = (directory / "template1es-mono-startup.yml").read_text()
+        body = (directory / "template1es-body.yml").read_text()
+        self.assertEqual(normal.split("extends:\n")[0], originals["template1es.yml"].split("extends:\n")[0])
+        self.assertEqual(diagnostic.replace(producer.EXPECTED_1ES_COMMIT, "refs/tags/release").replace(
+            "    enableMonoStartupMetadata: true\n", ""), normal)
+        forwarding = (
+            "  template: template1es-body.yml\n"
+            "  parameters:\n"
+            "    containers: ${{ parameters.containers }}\n"
+            "    stages: ${{ parameters.stages }}\n"
+        )
+        self.assertEqual(normal.split("extends:\n")[1], forwarding)
+        self.assertEqual(body.count(inclusion), 1)
+        self.assertEqual(body.split("extends:\n")[0],
+                         "parameters:\n  - name: stages\n    type: stageList\n"
+                         "  - name: containers\n    type: object\n"
+                         "  - name: enableMonoStartupMetadata\n    type: boolean\n    default: false\n\n")
+        self.assertEqual(body.split("extends:\n")[1].replace(inclusion, ""),
+                         originals["template1es.yml"].split("extends:\n")[1])
+        reviewed = producer.subprocess.run([
+            "git", "show", "a0115fb6b71937a0e99037e594c33dca35c0351a:eng/pipelines/common/templates/template1es.yml",
+        ], cwd=ROOT, env=dict(producer.os.environ), stdout=producer.subprocess.PIPE,
+            stderr=producer.subprocess.PIPE, text=True)
+        self.assertEqual(reviewed.returncode, 0, reviewed.stderr)
+        self.assertEqual(body.split("extends:\n")[1], reviewed.stdout.split("extends:\n")[1])
+        for content in (normal, diagnostic, body, (directory / "templateDispatch.yml").read_text(),
+                        (directory / "pipeline-with-resources.yml").read_text(),
+                        (ROOT / "eng/pipelines/runtime-official.yml").read_text()):
+            self.assertNotIn("oneESTemplateRef", content)
         graph = json.loads((ROOT / "eng/pipelines/mono-android-startup-metadata.yml").read_text())
         stage, = graph["stages"]
         checked_out = {step["checkout"] for job in stage["jobs"]

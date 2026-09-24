@@ -12,8 +12,10 @@ extends:
   template: templateDispatch.yml
   parameters:
     ${{ if parameters.isOfficialBuild }}:
-      templatePath: template1es.yml
-      enableMonoStartupMetadata: ${{ parameters.enableMonoStartupMetadata }}
+      ${{ if parameters.enableMonoStartupMetadata }}:
+        templatePath: template1es-mono-startup.yml
+      ${{ else }}:
+        templatePath: template1es.yml
     ${{ else }}:
       templatePath: templatePublic.yml
 

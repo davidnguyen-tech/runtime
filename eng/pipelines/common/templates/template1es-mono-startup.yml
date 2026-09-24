@@ -15,10 +15,11 @@ resources:
   - repository: 1ESPipelineTemplates
     type: git
     name: 1ESPipelineTemplates/1ESPipelineTemplates
-    ref: refs/tags/release
+    ref: 8bb89477eb3e61becfe1ab21442fe9aefb031b35
 
 extends:
   template: template1es-body.yml
   parameters:
+    enableMonoStartupMetadata: true
     containers: ${{ parameters.containers }}
     stages: ${{ parameters.stages }}

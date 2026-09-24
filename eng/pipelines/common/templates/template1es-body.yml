@@ -1,0 +1,36 @@
+parameters:
+  - name: stages
+    type: stageList
+  - name: containers
+    type: object
+  - name: enableMonoStartupMetadata
+    type: boolean
+    default: false
+
+extends:
+  template: v1/1ES.Official.PipelineTemplate.yml@1ESPipelineTemplates
+  parameters:
+    sdl:
+      ${{ if parameters.enableMonoStartupMetadata }}:
+        sourceRepositoriesToScan:
+          include:
+          - repository: 1ESPipelineTemplates
+      codeql:
+        compiled:
+          enabled: false
+          justificationForDisabling: 'CodeQL is run manually on the runtime-codeql pipeline'
+      credscan:
+        suppressionsFile: $(Build.SourcesDirectory)/.config/CredScanSuppressions.json
+      policheck:
+        enabled: true
+      tsa:
+        enabled: true
+    pool:
+      name: $(DncEngInternalBuildPool)
+      image: 1es-windows-2022
+      os: windows
+
+    containers:
+      ${{ parameters.containers }}
+
+    stages: ${{ parameters.stages }}
