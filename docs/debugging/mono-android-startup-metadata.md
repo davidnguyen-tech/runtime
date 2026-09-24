@@ -187,6 +187,11 @@ The producer script builds the normal
 `mono.runtime+mono.corelib+libs.native+libs.sfx` prerequisites and the existing
 `Microsoft.NETCore.App.Runtime.Mono.sfxproj` for exactly Android x64 and arm64.
 This excludes unrelated `libs.pretest` dependencies, not runtime pack assets.
+The shared SFX package reference to `Microsoft.DiaSymReader.Native` is scoped to
+Windows targets, matching its native Windows payload consumer; Android packs
+do not restore this unused PDB reader. The source-only exclusion remains intact.
+Real MSBuild item comparisons cover this scope; successful evaluation alone does
+not establish a successful strict-audit restore or package build.
 It does not override audit/dependency versions, invent a package ZIP, or swap ELF
 files. Existing build and sfx closure checks remain active. Global `Version` and
 `PackageVersion` carry the common experiment version through

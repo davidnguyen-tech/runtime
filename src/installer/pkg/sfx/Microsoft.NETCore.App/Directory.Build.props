@@ -286,7 +286,8 @@
     <ExcludeFromClosure Include="@(NetFxReference)" />
  </ItemGroup>
 
-  <ItemGroup Condition="'$(DotNetBuildSourceOnly)' != 'true'">
+  <!-- The native PDB reader is Windows runtime payload, not a cross-platform pack build tool. -->
+  <ItemGroup Condition="'$(DotNetBuildSourceOnly)' != 'true' and '$(TargetOS)' == 'windows'">
     <!-- Add a reference to Microsoft.DiaSymReader.Native if one does not already exist. -->
     <PackageReference Include="Microsoft.DiaSymReader.Native"
                       Exclude="@(PackageReference)"

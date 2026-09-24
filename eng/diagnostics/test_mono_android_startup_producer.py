@@ -617,6 +617,65 @@ class ProducerTests(unittest.TestCase):
                 self.assertEqual(Path(items[0]["FullPath"]).resolve(), package.resolve())
                 package.unlink()
 
+    def test_sfx_native_pdb_reader_target_scope_with_actual_msbuild(self):
+        path = "src/installer/pkg/sfx/Microsoft.NETCore.App/Directory.Build.props"
+        env = dict(producer.os.environ, NUGET_PACKAGES=str(ROOT / ".packages"))
+        baseline = producer.subprocess.run(
+            ["git", "show", producer.BASELINE + ":" + path], cwd=ROOT, env=env,
+            stdout=producer.subprocess.PIPE, stderr=producer.subprocess.STDOUT, text=True)
+        self.assertEqual(baseline.returncode, 0, baseline.stdout)
+        dotnet = ROOT / ".dotnet" / ("dotnet.exe" if producer.os.name == "nt" else "dotnet")
+        with tempfile.TemporaryDirectory() as folder:
+            props = []
+            for name, content in (("baseline", baseline.stdout), ("current", (ROOT / path).read_text())):
+                # Preserve the original parent import while evaluating both real props
+                # through DirectoryBuildPropsPath without modifying the checkout.
+                content = content.replace("$(MSBuildThisFileDirectory)", str((ROOT / path).parent) + producer.os.sep)
+                file = Path(folder) / (name + ".props")
+                file.write_text(content, encoding="utf-8")
+                props.append(file)
+            for flavor, target, arch, source_only in (
+                ("Mono", "android", "x64", False), ("Mono", "android", "arm64", False),
+                ("Mono", "windows", "x64", False), ("Mono", "windows", "arm64", False),
+                ("CoreCLR", "windows", "x64", False), ("CoreCLR", "windows", "arm64", False),
+                ("Mono", "linux", "x64", False),
+                ("Mono", "windows", "x64", True), ("Mono", "android", "x64", True),
+            ):
+                with self.subTest(flavor=flavor, target=target, arch=arch, source_only=source_only):
+                    evaluations = []
+                    for file in props:
+                        project = (ROOT / path).parent / f"Microsoft.NETCore.App.Runtime.{flavor}.sfxproj"
+                        result = producer.subprocess.run([
+                            str(dotnet), "msbuild", str(project), f"/p:DirectoryBuildPropsPath={file}",
+                            f"/p:TargetOS={target}", f"/p:TargetArchitecture={arch}",
+                            f"/p:DotNetBuildSourceOnly={str(source_only).lower()}", "/p:Configuration=Release",
+                            "-getItem:PackageReference,NativeRuntimeAsset", "-nologo", "-verbosity:quiet",
+                        ], cwd=ROOT, env=env, stdout=producer.subprocess.PIPE,
+                            stderr=producer.subprocess.STDOUT, text=True)
+                        self.assertEqual(result.returncode, 0, result.stdout)
+                        items = json.loads(result.stdout)["Items"]
+                        # Only the defining file differs between the two temporary imports.
+                        for entries in items.values():
+                            for item in entries:
+                                for key in ("DefiningProjectFullPath", "DefiningProjectDirectory",
+                                            "DefiningProjectName", "DefiningProjectExtension"):
+                                    item.pop(key, None)
+                        evaluations.append(items)
+                    before, after = evaluations
+                    dia = [item for item in before["PackageReference"]
+                           if item["Identity"] == "Microsoft.DiaSymReader.Native"]
+                    self.assertEqual(len(dia), 0 if source_only else 1)
+                    if target != "windows" and not source_only:
+                        before["PackageReference"] = [item for item in before["PackageReference"]
+                                                      if item["Identity"] != "Microsoft.DiaSymReader.Native"]
+                    self.assertEqual(after, before)
+                    if target == "windows" and not source_only:
+                        self.assertTrue(any("Microsoft.DiaSymReader.Native." in item["Identity"]
+                                            for item in after["NativeRuntimeAsset"]))
+                    elif target != "windows":
+                        self.assertFalse(any("Microsoft.DiaSymReader.Native." in item["Identity"]
+                                             for item in after["NativeRuntimeAsset"]))
+
     def test_actual_mono_sfx_corelib_classification(self):
         dotnet = ROOT / ".dotnet" / ("dotnet.exe" if producer.os.name == "nt" else "dotnet")
         with tempfile.TemporaryDirectory() as folder:
