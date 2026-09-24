@@ -152,9 +152,14 @@ and commit, not a `yamlOverride` and not the release-only baseline paired with
 Local structural tests are not provider compilation or signing authorization.
 
 The root retains its existing `1ESPipelineTemplates` repository resource:
-`1ESPipelineTemplates/1ESPipelineTemplates`, `refs/tags/release`. For this
-diagnostic baseline, pin its preview/run resource version to
-`8bb89477eb3e61becfe1ab21442fe9aefb031b35`. The diagnostic helper compares the
+`1ESPipelineTemplates/1ESPipelineTemplates`. The ordinary disabled path still
+uses `refs/tags/release`; the diagnostic path selects the immutable YAML `ref`
+`8bb89477eb3e61becfe1ab21442fe9aefb031b35`. Do not override that resource back to
+the moving release tag in preview/run requests. A requested REST resource version
+alone did not enforce the template resolution observed in run 3087006; actual
+resource readback must match the reviewed commit. Azure Pipelines supports
+[commit SHA repository refs](https://learn.microsoft.com/en-us/azure/devops/pipelines/process/templates#store-templates-in-other-repositories).
+The diagnostic helper compares the
 provider's resolved resource version with that expected commit and the actual
 resource checkout, and hashes the checked-out entry template. The ordinary
 default-off root's resource behavior is not changed.

@@ -259,7 +259,7 @@ class ProducerTests(unittest.TestCase):
                         if failure == "producer-exit":
                             self.assertEqual(result.returncode, 7)
 
-    def test_diagnostic_sdl_coverage_and_flag_dispatch(self):
+    def test_diagnostic_template_pin_sdl_coverage_and_flag_dispatch(self):
         parameter = "  - name: enableMonoStartupMetadata\n    type: boolean\n    default: false\n"
         forwarding = (
             "\n    ${{ if and(eq(parameters.templatePath, 'template1es.yml'), parameters.enableMonoStartupMetadata) }}:\n"
@@ -271,6 +271,12 @@ class ProducerTests(unittest.TestCase):
             "          include:\n"
             "          - repository: 1ESPipelineTemplates\n"
         )
+        pin = (
+            "    ${{ if parameters.enableMonoStartupMetadata }}:\n"
+            f"      ref: {producer.EXPECTED_1ES_COMMIT}\n"
+            "    ${{ else }}:\n"
+            "      ref: refs/tags/release\n"
+        )
         for name, addition in (("templateDispatch.yml", forwarding), ("template1es.yml", inclusion)):
             path = "eng/pipelines/common/templates/" + name
             baseline = producer.subprocess.run([
@@ -281,9 +287,19 @@ class ProducerTests(unittest.TestCase):
             current = (ROOT / path).read_text()
             self.assertEqual(current.count(parameter), 1)
             self.assertEqual(current.count(addition), 1)
-            self.assertEqual(current.replace(parameter, "").replace(addition, ""), baseline.stdout)
             if name == "template1es.yml":
+                self.assertEqual(current.count(pin), 1)
+                resource = (
+                    "resources:\n  repositories:\n"
+                    "  - repository: 1ESPipelineTemplates\n"
+                    "    type: git\n"
+                    "    name: 1ESPipelineTemplates/1ESPipelineTemplates\n"
+                )
+                self.assertEqual(current.split("resources:\n", 1)[1].split("\nextends:", 1)[0],
+                                 (resource + pin).split("resources:\n", 1)[1])
                 self.assertIn("    sdl:\n" + inclusion + "      codeql:\n", current)
+                current = current.replace(pin, "    ref: refs/tags/release\n")
+            self.assertEqual(current.replace(parameter, "").replace(addition, ""), baseline.stdout)
         graph = json.loads((ROOT / "eng/pipelines/mono-android-startup-metadata.yml").read_text())
         stage, = graph["stages"]
         checked_out = {step["checkout"] for job in stage["jobs"]
