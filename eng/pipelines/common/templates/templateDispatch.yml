@@ -5,9 +5,14 @@ parameters:
     type: stageList
   - name: containers
     type: object
+  - name: enableMonoStartupMetadata
+    type: boolean
+    default: false
 
 extends:
   template: ${{ parameters.templatePath }}
   parameters:
     stages: ${{ parameters.stages }}
     containers: ${{ parameters.containers }}
+    ${{ if and(eq(parameters.templatePath, 'template1es.yml'), parameters.enableMonoStartupMetadata) }}:
+      enableMonoStartupMetadata: true

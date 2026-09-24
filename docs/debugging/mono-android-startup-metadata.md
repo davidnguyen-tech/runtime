@@ -158,6 +158,8 @@ diagnostic baseline, pin its preview/run resource version to
 provider's resolved resource version with that expected commit and the actual
 resource checkout, and hashes the checked-out entry template. The ordinary
 default-off root's resource behavior is not changed.
+The diagnostic template checkout is explicitly included in normal SDL source
+scanning only on that path; self coverage and ordinary SDL settings are preserved.
 
 `MonoStartupMetadata` contains `ValidateInputs`, `BuildRuntimePacks`, and
 `TestSignRuntimePacks`, in dependency order. The normal official job wrapper

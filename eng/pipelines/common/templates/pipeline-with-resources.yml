@@ -13,6 +13,7 @@ extends:
   parameters:
     ${{ if parameters.isOfficialBuild }}:
       templatePath: template1es.yml
+      enableMonoStartupMetadata: ${{ parameters.enableMonoStartupMetadata }}
     ${{ else }}:
       templatePath: templatePublic.yml
 

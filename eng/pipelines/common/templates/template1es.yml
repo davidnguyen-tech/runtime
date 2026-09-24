@@ -8,6 +8,9 @@ parameters:
     type: stageList
   - name: containers
     type: object
+  - name: enableMonoStartupMetadata
+    type: boolean
+    default: false
 
 
 resources:
@@ -21,6 +24,10 @@ extends:
   template: v1/1ES.Official.PipelineTemplate.yml@1ESPipelineTemplates
   parameters:
     sdl:
+      ${{ if parameters.enableMonoStartupMetadata }}:
+        sourceRepositoriesToScan:
+          include:
+          - repository: 1ESPipelineTemplates
       codeql:
         compiled:
           enabled: false

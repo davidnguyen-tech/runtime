@@ -159,17 +159,56 @@ class ProducerTests(unittest.TestCase):
             f"          image: {normal_image}\n"
         )
         self.assertEqual(current.count(conditional), 1)
+        forwarding = "      enableMonoStartupMetadata: ${{ parameters.enableMonoStartupMetadata }}\n"
+        self.assertEqual(current.count(forwarding), 1)
+        self.assertIn("    ${{ if parameters.isOfficialBuild }}:\n"
+                      "      templatePath: template1es.yml\n" + forwarding +
+                      "    ${{ else }}:\n"
+                      "      templatePath: templatePublic.yml\n", current)
         for official in (False, True):
             for enabled in (False, True):
                 with self.subTest(official=official, enabled=enabled):
                     image = producer.PRODUCER_IMAGE if official and enabled else normal_image
-                    resolved = current.replace(parameter, "").replace(conditional, f"      android:\n        image: {image}\n")
+                    resolved = current.replace(parameter, "").replace(forwarding, "").replace(
+                        conditional, f"      android:\n        image: {image}\n")
                     self.assertEqual(resolved, baseline.stdout.replace(normal, f"      android:\n        image: {image}\n"))
         graph = json.loads((ROOT / "eng/pipelines/mono-android-startup-metadata.yml").read_text())
         stage, = graph["stages"]
         self.assertEqual(next(item["value"] for item in stage["variables"] if item["name"] == "StartupMetadataImage"),
                          producer.PRODUCER_IMAGE)
-        self.assertNotIn("enableMonoStartupMetadata", current.split("    containers:\n", 1)[0].split("extends:\n", 1)[1])
+        self.assertNotIn("enableMonoStartupMetadata", current.replace(forwarding, "").split(
+            "    containers:\n", 1)[0].split("extends:\n", 1)[1])
+
+    def test_diagnostic_sdl_coverage_and_flag_dispatch(self):
+        parameter = "  - name: enableMonoStartupMetadata\n    type: boolean\n    default: false\n"
+        forwarding = (
+            "\n    ${{ if and(eq(parameters.templatePath, 'template1es.yml'), parameters.enableMonoStartupMetadata) }}:\n"
+            "      enableMonoStartupMetadata: true"
+        )
+        inclusion = (
+            "      ${{ if parameters.enableMonoStartupMetadata }}:\n"
+            "        sourceRepositoriesToScan:\n"
+            "          include:\n"
+            "          - repository: 1ESPipelineTemplates\n"
+        )
+        for name, addition in (("templateDispatch.yml", forwarding), ("template1es.yml", inclusion)):
+            path = "eng/pipelines/common/templates/" + name
+            baseline = producer.subprocess.run([
+                "git", "show", producer.BASELINE + ":" + path,
+            ], cwd=ROOT, env=dict(producer.os.environ), stdout=producer.subprocess.PIPE,
+                stderr=producer.subprocess.PIPE, text=True)
+            self.assertEqual(baseline.returncode, 0, baseline.stderr)
+            current = (ROOT / path).read_text()
+            self.assertEqual(current.count(parameter), 1)
+            self.assertEqual(current.count(addition), 1)
+            self.assertEqual(current.replace(parameter, "").replace(addition, ""), baseline.stdout)
+            if name == "template1es.yml":
+                self.assertIn("    sdl:\n" + inclusion + "      codeql:\n", current)
+        graph = json.loads((ROOT / "eng/pipelines/mono-android-startup-metadata.yml").read_text())
+        stage, = graph["stages"]
+        checked_out = {step["checkout"] for job in stage["jobs"]
+                       for step in job["parameters"].get("preSteps", [])}
+        self.assertEqual(checked_out, {"self", "1ESPipelineTemplates"})
 
     def test_marker_forward_and_invalidation(self):
         project = ET.parse(ROOT / "src/mono/mono.proj")
