@@ -192,6 +192,10 @@ Windows targets, matching its native Windows payload consumer; Android packs
 do not restore this unused PDB reader. The source-only exclusion remains intact.
 Real MSBuild item comparisons cover this scope; successful evaluation alone does
 not establish a successful strict-audit restore or package build.
+The evaluation-only Windows CoreCLR controls import the checked-in Crossgen task
+props/targets that the normal task project copies to its output. They do not
+require historical Crossgen build outputs or execute ReadyToRun tasks, and
+explicitly reproduce the missing-generated-import failure before evaluating.
 It does not override audit/dependency versions, invent a package ZIP, or swap ELF
 files. Existing build and sfx closure checks remain active. Global `Version` and
 `PackageVersion` carry the common experiment version through

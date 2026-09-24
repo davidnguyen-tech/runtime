@@ -625,6 +625,13 @@ class ProducerTests(unittest.TestCase):
             stdout=producer.subprocess.PIPE, stderr=producer.subprocess.STDOUT, text=True)
         self.assertEqual(baseline.returncode, 0, baseline.stdout)
         dotnet = ROOT / ".dotnet" / ("dotnet.exe" if producer.os.name == "nt" else "dotnet")
+        crossgen = ROOT / "src/tasks/Crossgen2Tasks"
+        # These are the real inputs copied by Crossgen2Tasks.csproj. Evaluation
+        # registers tasks but never executes R2R or needs the generated task DLL.
+        crossgen_imports = [
+            f"/p:Crossgen2SdkOverridePropsPath={crossgen / 'ShimFilesSimulatingLogicInSdkRepo/Microsoft.NET.CrossGen.props'}",
+            f"/p:Crossgen2SdkOverrideTargetsPath={crossgen / 'Microsoft.NET.CrossGen.targets'}",
+        ]
         with tempfile.TemporaryDirectory() as folder:
             props = []
             for name, content in (("baseline", baseline.stdout), ("current", (ROOT / path).read_text())):
@@ -645,12 +652,24 @@ class ProducerTests(unittest.TestCase):
                     evaluations = []
                     for file in props:
                         project = (ROOT / path).parent / f"Microsoft.NETCore.App.Runtime.{flavor}.sfxproj"
-                        result = producer.subprocess.run([
+                        command = [
                             str(dotnet), "msbuild", str(project), f"/p:DirectoryBuildPropsPath={file}",
                             f"/p:TargetOS={target}", f"/p:TargetArchitecture={arch}",
                             f"/p:DotNetBuildSourceOnly={str(source_only).lower()}", "/p:Configuration=Release",
                             "-getItem:PackageReference,NativeRuntimeAsset", "-nologo", "-verbosity:quiet",
-                        ], cwd=ROOT, env=env, stdout=producer.subprocess.PIPE,
+                        ]
+                        if flavor == "CoreCLR":
+                            missing = Path(folder) / "unbuilt/Microsoft.NET.CrossGen.props"
+                            self.assertFalse(missing.exists())
+                            failure = producer.subprocess.run(
+                                command + [f"/p:Crossgen2SdkOverridePropsPath={missing}"],
+                                cwd=ROOT, env=env, stdout=producer.subprocess.PIPE,
+                                stderr=producer.subprocess.STDOUT, text=True)
+                            self.assertNotEqual(failure.returncode, 0)
+                            self.assertIn("MSB4019", failure.stdout)
+                            self.assertIn(str(missing), failure.stdout)
+                        result = producer.subprocess.run(command + crossgen_imports,
+                            cwd=ROOT, env=env, stdout=producer.subprocess.PIPE,
                             stderr=producer.subprocess.STDOUT, text=True)
                         self.assertEqual(result.returncode, 0, result.stdout)
                         items = json.loads(result.stdout)["Items"]
