@@ -179,6 +179,86 @@ class ProducerTests(unittest.TestCase):
         self.assertNotIn("enableMonoStartupMetadata", current.replace(forwarding, "").split(
             "    containers:\n", 1)[0].split("extends:\n", 1)[1])
 
+    def test_host_checkout_and_container_path_execution(self):
+        graph = json.loads((ROOT / "eng/pipelines/mono-android-startup-metadata.yml").read_text())
+        jobs = [job["parameters"] for job in graph["stages"][0]["jobs"]]
+        build = next(job for job in jobs if job["name"] == "BuildRuntimePacks")
+        sign = next(job for job in jobs if job["name"] == "TestSignRuntimePacks")
+        for checkout in build["preSteps"]:
+            self.assertEqual(checkout["target"], {"container": "host"})
+        self.assertEqual([step["path"] for step in build["preSteps"]], ["s", "startup-templates"])
+        step, = build["steps"]
+        self.assertEqual(step["target"], {"container": "android"})
+        self.assertNotIn("workingDirectory", step)
+        self.assertNotIn("PRODUCER_OUTPUT", step["env"])
+        self.assertNotIn("STARTUP_1ES_ROOT", step["env"])
+        self.assertNotIn("$(", step["bash"])
+        self.assertNotIn("container", sign)
+        self.assertEqual(sign["steps"][0]["env"]["PRODUCER_OUTPUT"],
+                         "$(Build.ArtifactStagingDirectory)/mono-startup-test-signed")
+        self.assertEqual(sign["steps"][0]["env"]["STARTUP_1ES_ROOT"], "$(Pipeline.Workspace)/startup-templates")
+        self.assertEqual(build["templateContext"]["outputs"][0]["targetPath"],
+                         "$(Build.ArtifactStagingDirectory)/mono-startup-build")
+        bash = producer.shutil.which("bash")
+        self.assertIsNotNone(bash, "An existing Bash is required to execute the actual Linux pipeline script")
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            source = root / "mapped source"
+            workspace = root / "mapped workspace"
+            staging = root / "mapped staging"
+            for path in (source, workspace, staging):
+                path.mkdir()
+            capture = root / "invocation.txt"
+            # Mock only the expensive producer boundary; execute the actual YAML Bash.
+            probe = (
+                'python3() {\n'
+                '  [[ "$PWD" -ef "$BUILD_SOURCESDIRECTORY" ]] || return 91\n'
+                '  printf "%s\\n" "$PWD" "$STARTUP_1ES_ROOT" "$@" > "$CAPTURE_FILE"\n'
+                '  return "${PROBE_EXIT:-0}"\n'
+                '}\n' + step["bash"]
+            )
+            script = root / "probe.sh"
+            with script.open("w", encoding="utf-8", newline="\n") as stream:
+                stream.write(probe)
+            env = dict(producer.os.environ, BUILD_SOURCESDIRECTORY=source.as_posix(),
+                       PIPELINE_WORKSPACE=workspace.as_posix(), BUILD_ARTIFACTSTAGINGDIRECTORY=staging.as_posix(),
+                       CAPTURE_FILE=capture.as_posix(), REVIEWED_SOURCE=SOURCE, REVIEWED_CONTAINER=IMAGE,
+                       BUILD_BUILDID="123", STARTUP_EXPERIMENT_ATTEMPT="1", SYSTEM_JOBATTEMPT="2",
+                       ANDROID_NDK_ROOT=(root / "toolchain").as_posix(),
+                       PRODUCER_OUTPUT="HOST-PATH-MUST-NOT-BE-USED",
+                       STARTUP_1ES_ROOT="HOST-PATH-MUST-NOT-BE-USED")
+            for failure in (None, "producer-exit", "BUILD_SOURCESDIRECTORY",
+                            "PIPELINE_WORKSPACE", "BUILD_ARTIFACTSTAGINGDIRECTORY"):
+                with self.subTest(failure=failure):
+                    case_env = {**env, "PROBE_EXIT": "7" if failure == "producer-exit" else "0"}
+                    if failure in ("BUILD_SOURCESDIRECTORY", "PIPELINE_WORKSPACE", "BUILD_ARTIFACTSTAGINGDIRECTORY"):
+                        case_env[failure] = ""
+                    if capture.exists():
+                        capture.unlink()
+                    result = producer.subprocess.run([bash, script.as_posix()], cwd=root, env=case_env,
+                                                     stdout=producer.subprocess.PIPE, stderr=producer.subprocess.STDOUT, text=True)
+                    if failure is None or failure == "producer-exit":
+                        lines = capture.read_text().splitlines()
+                        # Git Bash reports PWD as /d/... on Windows; check its directory leaf
+                        # while asserting exact mapped inputs for all producer arguments.
+                        self.assertTrue(lines[0].endswith("/mapped source"))
+                        self.assertEqual(lines[1], workspace.as_posix() + "/startup-templates")
+                        self.assertEqual(lines[2], "eng/diagnostics/produce-mono-android-startup.py")
+                        self.assertEqual(lines[lines.index("--output") + 1], staging.as_posix() + "/mono-startup-build")
+                        self.assertEqual(lines[lines.index("--run-id") + 1], "123.1")
+                        self.assertEqual(lines[lines.index("--container") + 1], IMAGE)
+                        self.assertNotIn("HOST-PATH-MUST-NOT-BE-USED", "\n".join(lines))
+                    else:
+                        self.assertFalse(capture.exists(), result.stdout)
+                    if failure is None:
+                        self.assertEqual(result.returncode, 0, result.stdout)
+                        self.assertIn("variable=ProducerAttempt;isOutput=true]2", result.stdout)
+                    else:
+                        self.assertNotEqual(result.returncode, 0)
+                        self.assertNotIn("variable=ProducerAttempt", result.stdout)
+                        if failure == "producer-exit":
+                            self.assertEqual(result.returncode, 7)
+
     def test_diagnostic_sdl_coverage_and_flag_dispatch(self):
         parameter = "  - name: enableMonoStartupMetadata\n    type: boolean\n    default: false\n"
         forwarding = (

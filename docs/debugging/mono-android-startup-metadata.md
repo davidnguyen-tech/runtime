@@ -175,6 +175,14 @@ are collected in the job; image environment declarations alone are not proof
 of a successful build. This route does not extract local SDK archives, accept
 licenses on the user's behalf, install a guest, or start an emulator.
 
+Both Linux checkout steps explicitly target the host; the producer step targets
+`android`. Inside that step, source, staging and template paths derive from the
+agent-mapped `BUILD_SOURCESDIRECTORY`, `BUILD_ARTIFACTSTAGINGDIRECTORY` and
+`PIPELINE_WORKSPACE` environment variables. Host-expanded custom path variables
+and mount-prefix substitutions are not used. Artifact declarations retain their
+normal host-side staging paths and `isProduction: false`; Windows signing runs
+without a container and retains its existing host paths.
+
 The producer script builds the normal
 `mono.runtime+mono.corelib+libs.native+libs.sfx` prerequisites and the existing
 `Microsoft.NETCore.App.Runtime.Mono.sfxproj` for exactly Android x64 and arm64.

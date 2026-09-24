@@ -52,8 +52,8 @@
             },
             "container": "android",
             "preSteps": [
-              { "checkout": "self", "path": "s", "clean": true, "fetchDepth": 0, "persistCredentials": false },
-              { "checkout": "1ESPipelineTemplates", "path": "startup-templates", "fetchDepth": 1, "persistCredentials": false }
+              { "checkout": "self", "target": { "container": "host" }, "path": "s", "clean": true, "fetchDepth": 0, "persistCredentials": false },
+              { "checkout": "1ESPipelineTemplates", "target": { "container": "host" }, "path": "startup-templates", "fetchDepth": 1, "persistCredentials": false }
             ],
             "templateContext": {
               "outputs": [
@@ -68,16 +68,14 @@
             },
             "steps": [
               {
-                "bash": "set -euo pipefail\npython3 eng/diagnostics/produce-mono-android-startup.py --enable --source \"$REVIEWED_SOURCE\" --run-id \"$BUILD_BUILDID.$STARTUP_EXPERIMENT_ATTEMPT\" --container \"$REVIEWED_CONTAINER\" --ndk \"$ANDROID_NDK_ROOT\" --ndk-revision 27.2.12479018 --output \"$PRODUCER_OUTPUT\"\nprintf '##vso[task.setvariable variable=ProducerAttempt;isOutput=true]%s\\n' \"$SYSTEM_JOBATTEMPT\"\n",
+                "bash": "set -euo pipefail\ncd \"${BUILD_SOURCESDIRECTORY:?}\"\nexport STARTUP_1ES_ROOT=\"${PIPELINE_WORKSPACE:?}/startup-templates\"\nproducer_output=\"${BUILD_ARTIFACTSTAGINGDIRECTORY:?}/mono-startup-build\"\npython3 eng/diagnostics/produce-mono-android-startup.py --enable --source \"$REVIEWED_SOURCE\" --run-id \"$BUILD_BUILDID.$STARTUP_EXPERIMENT_ATTEMPT\" --container \"$REVIEWED_CONTAINER\" --ndk \"$ANDROID_NDK_ROOT\" --ndk-revision 27.2.12479018 --output \"$producer_output\"\nprintf '##vso[task.setvariable variable=ProducerAttempt;isOutput=true]%s\\n' \"$SYSTEM_JOBATTEMPT\"\n",
                 "name": "BuildEvidence",
-                "workingDirectory": "$(Pipeline.Workspace)/s",
+                "target": { "container": "android" },
                 "displayName": "Build normal packs and retain actual command evidence",
                 "env": {
                   "REVIEWED_SOURCE": "${{ parameters.sourceCommit }}",
                   "REVIEWED_CONTAINER": "$(StartupMetadataImage)",
-                  "PRODUCER_OUTPUT": "$(Build.ArtifactStagingDirectory)/mono-startup-build",
                   "STARTUP_1ES_COMMIT": "$(StartupMetadata1ESCommit)",
-                  "STARTUP_1ES_ROOT": "$(Pipeline.Workspace)/startup-templates",
                   "STARTUP_EXPERIMENT_ATTEMPT": "${{ parameters.attempt }}"
                 }
               }
