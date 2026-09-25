@@ -177,7 +177,7 @@ class PerfPipelineTests(unittest.TestCase):
     def test_exact_performance_commit_pins_both_resources_for_preview(self):
         for text in (self.perf, self.perf_slow):
             self.assertIn(
-                "ref: 696188811beac80c11392efb6876ca60190d5e9b",
+                "ref: b06465a7b2e8df100e32acce786d3ed9ecbffc41",
                 text,
             )
             self.assertIn(
