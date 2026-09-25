@@ -11,6 +11,8 @@ parameters:
 - name: externalRuntimeMode
   type: boolean
   default: false
+# Definition 1012 supports only the complete external-runtime matrix. It intentionally
+# does not expose externalRuntimeScope, so Runs API requests for an x64 scope are rejected.
 - name: externalRuntimeContractVersion
   type: string
   default: ''
@@ -81,7 +83,7 @@ resources:
       type: git
       name: internal/dotnet-performance
       # Restore the merged/default performance ref before merging this runtime branch.
-      ref: refs/heads/davidnguyen-tech-consume-runtimelab-gc-experiment
+      ref: ad58479dd0e7d796579d464b318ac43a483258b6
 
 variables:
   - template: /eng/pipelines/common/variables.yml
