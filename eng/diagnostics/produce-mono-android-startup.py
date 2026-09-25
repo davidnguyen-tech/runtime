@@ -14,6 +14,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import threading
 import xml.etree.ElementTree as ET
 import zipfile
 
@@ -29,13 +30,18 @@ REPOSITORY_ID = "a2f9a77f-0d37-4eaf-aecc-5b3ff7457ad6"
 TEMPLATE_PATHS = [
     PIPELINE_PATH, "eng/pipelines/mono-android-startup-metadata.yml",
     "eng/pipelines/common/templates/pipeline-with-resources.yml",
-    "eng/pipelines/common/templates/template1es.yml",
+    "eng/pipelines/common/templates/templateDispatch.yml",
+    "eng/pipelines/common/templates/template1es-mono-startup.yml",
+    "eng/pipelines/common/templates/template1es-body.yml",
     "eng/common/templates-official/job/job.yml", "eng/common/core-templates/job/job.yml",
     "eng/common/core-templates/steps/install-microbuild.yml", "eng/Signing.props",
 ]
 MAX_PACKAGE_BYTES = 2 * 1024 * 1024 * 1024
 MAX_ENTRY_BYTES = 512 * 1024 * 1024
 MAX_ENTRIES = 20000
+TEMPLATE_BYTES = 1048576
+TEMPLATE_TOTAL_BYTES = 16777216
+TEMPLATE_SIDECAR = "template-evidence.json"
 
 
 def require(condition, message):
@@ -77,6 +83,9 @@ def reference(path):
 
 
 def persist_receipt(output, receipt):
+    evidence = output / receipt.get("commandLogDirectory", "") / TEMPLATE_SIDECAR
+    if "templateEvidence" in receipt and evidence.is_file():
+        receipt["templateEvidence"] = reference(evidence)
     receipt["retained_files"] = [
         {"path": path.relative_to(output).as_posix(), "sizeBytes": path.stat().st_size, "sha256": sha256(path)}
         for path in sorted(output.rglob("*")) if path.is_file() and path != output / "receipt.json"
@@ -267,7 +276,7 @@ def verify_signature(dotnet, package, inventory, env, output, tool_version, obse
             "outputFileName": log.name, "outputSha256": sha256(log)}
 
 
-def execute(command, root, env, output, name, observations, check=True):
+def execute(command, root, env, output, name, observations, check=True, stdout_limit=None):
     log = output / f"{name}.log"
     observation = {"name": name, "argv": list(command), "cwd": str(root),
                    "status": "log-open-failed", "exitCode": None,
@@ -275,9 +284,44 @@ def execute(command, root, env, output, name, observations, check=True):
     try:
         with log.open("wb") as stream:
             observation["status"] = "launch-failed"
-            result = subprocess.run(command, cwd=root, env=env, stdout=stream, stderr=subprocess.STDOUT)
-            observation["exitCode"] = result.returncode
-            observation["status"] = "completed" if result.returncode == 0 else "failed"
+            if stdout_limit is None:
+                result = subprocess.run(command, cwd=root, env=env, stdout=stream, stderr=subprocess.STDOUT)
+                exit_code = result.returncode
+                capture_errors = []
+            else:
+                # Git blob stdout must not contain diagnostics or undergo text conversion.
+                capture_errors = []
+                with (output / f"{name}.stderr.log").open("wb") as errors, \
+                        subprocess.Popen(command, cwd=root, env=env, stdout=subprocess.PIPE,
+                                         stderr=subprocess.PIPE) as process:
+                    def copy_bounded(source, destination, limit):
+                        try:
+                            remaining = limit
+                            while chunk := source.read(65536):
+                                destination.write(chunk[:remaining])
+                                if len(chunk) > remaining:
+                                    raise ValueError("Template command capture exceeds byte bound")
+                                remaining -= len(chunk)
+                                if remaining == 0:
+                                    if source.read(1):
+                                        raise ValueError("Template command capture exceeds byte bound")
+                                    break
+                        except (OSError, ValueError) as error:
+                            capture_errors.append(error)
+                            # This is only the subprocess owned by this bounded capture.
+                            if process.poll() is None:
+                                process.kill()
+                    readers = [threading.Thread(target=copy_bounded, args=(process.stdout, stream, stdout_limit)),
+                               threading.Thread(target=copy_bounded, args=(process.stderr, errors, 65536))]
+                    for reader in readers:
+                        reader.start()
+                    for reader in readers:
+                        reader.join()
+                    exit_code = process.wait()
+            observation["exitCode"] = exit_code
+            observation["status"] = "completed" if exit_code == 0 else "failed"
+            if capture_errors:
+                raise capture_errors[0]
     except OSError as error:
         observation["error"] = str(error)
         raise
@@ -287,12 +331,14 @@ def execute(command, root, env, output, name, observations, check=True):
             observation["logSha256"] = sha256(log)
     require(not check or observation["exitCode"] == 0,
             f"{name} failed with exit {observation['exitCode']}; see {log}")
+    if stdout_limit is not None:
+        require((output / f"{name}.stderr.log").stat().st_size == 0, "Template command wrote stderr: " + name)
     return log
 
 
 def source_evidence(root, recipe, env, output, observations):
     source_log = execute(["git", "rev-parse", "HEAD"], root, env, output, "source-head", observations)
-    require(source_log.read_text(encoding="utf-8").strip() == recipe["source"],
+    require(source_log.read_bytes() == (recipe["source"] + "\n").encode("ascii"),
             "Checked out source differs from reviewed source")
     status_log = execute(["git", "status", "--porcelain"], root, env, output, "source-status", observations)
     require(not status_log.read_bytes(), "Producer source checkout is dirty")
@@ -303,21 +349,165 @@ def source_evidence(root, recipe, env, output, observations):
     return sha256(output / "source.patch")
 
 
+def template_identities(recipe):
+    return [{"repository": "dotnet/runtime", "commit": recipe["source"], "path": path} for path in TEMPLATE_PATHS] + [
+        {"repository": "1ESPipelineTemplates/1ESPipelineTemplates", "commit": recipe["expected_1es_commit"],
+         "path": "v1/1ES.Official.PipelineTemplate.yml"}]
+
+
+def template_transform(canonical, raw):
+    for data in (canonical, raw):
+        data.decode("utf-8", errors="strict")
+        require(b"\0" not in data, "NUL in template evidence")
+    if raw == canonical:
+        return "identity"
+    require(b"\n" in canonical and b"\r" not in canonical and raw == canonical.replace(b"\n", b"\r\n"),
+            "Unsupported template checkout transform")
+    return "lf-to-crlf"
+
+
+def bounded_template_file(path, limit):
+    require(path.is_file() and not path.is_symlink() and not any(parent.is_symlink() for parent in path.parents),
+            "Template evidence must be a regular non-symlink file")
+    size = path.stat().st_size
+    require(size <= limit, "Template evidence exceeds byte bound")
+    return size
+
+
 def template_evidence(root, recipe, env, output, observations):
-    commit = env.get("STARTUP_1ES_COMMIT", "")
-    require(commit == recipe["expected_1es_commit"], "Actual resolved 1ES commit differs from the reviewed diagnostic baseline")
-    require(env.get("STARTUP_1ES_ROOT"), "Checked-out resolved 1ES repository is required")
-    templates = Path(env["STARTUP_1ES_ROOT"]).resolve()
-    log = execute(["git", "rev-parse", "HEAD"], templates, env, output, "template-head", observations)
-    require(log.read_text(encoding="utf-8").strip() == commit, "1ES checkout differs from provider-resolved commit")
-    status = execute(["git", "status", "--porcelain"], templates, env, output, "template-status", observations)
-    require(not status.read_bytes(), "Resolved 1ES template checkout is dirty")
-    records = [{"repository": "dotnet/runtime", "commit": recipe["source"], "path": path,
-                "sha256": sha256(root / path)} for path in TEMPLATE_PATHS]
-    path = "v1/1ES.Official.PipelineTemplate.yml"
-    records.append({"repository": "1ESPipelineTemplates/1ESPipelineTemplates", "commit": commit,
-                    "path": path, "sha256": sha256(templates / path)})
+    sidecar = {"schemaVersion": 1, "kind": "mono-startup-template-evidence", "status": "started", "records": []}
+    target = output / TEMPLATE_SIDECAR
+    write_json(target, sidecar)
+    records = []
+    try:
+        commit = env.get("STARTUP_1ES_COMMIT", "")
+        require(commit == recipe["expected_1es_commit"], "Actual resolved 1ES commit differs from the reviewed diagnostic baseline")
+        require(env.get("STARTUP_1ES_ROOT"), "Checked-out resolved 1ES repository is required")
+        templates = Path(env["STARTUP_1ES_ROOT"]).resolve()
+        log = execute(["git", "rev-parse", "HEAD"], templates, env, output, "template-head", observations)
+        require(log.read_bytes() == (commit + "\n").encode("ascii"), "1ES checkout differs from provider-resolved commit")
+        status = execute(["git", "status", "--porcelain"], templates, env, output, "template-status", observations)
+        require(not status.read_bytes(), "Resolved 1ES template checkout is dirty")
+        total = 0
+        for index, identity in enumerate(template_identities(recipe)):
+            checkout = root if identity["repository"] == "dotnet/runtime" else templates
+            raw_path = checkout / identity["path"]
+            raw_size = bounded_template_file(raw_path, TEMPLATE_BYTES)
+            name = f"template-{index:02d}"
+            operand = identity["commit"] + ":" + identity["path"]
+            size_log = execute(["git", "cat-file", "-s", operand], checkout, env, output,
+                               name + "-size", observations, stdout_limit=64)
+            size_bytes = size_log.read_bytes()
+            require(re.fullmatch(rb"[1-9][0-9]*\n", size_bytes), "Invalid Git blob size output")
+            size = int(size_bytes)
+            require(size <= TEMPLATE_BYTES, "Canonical template exceeds byte bound")
+            total += raw_size + size + 41 + len(size_bytes)
+            require(total <= TEMPLATE_TOTAL_BYTES, "Template evidence exceeds aggregate bound")
+            raw_file = output / (name + "-raw.bin")
+            with raw_path.open("rb") as source, raw_file.open("xb") as destination:
+                raw = source.read(raw_size + 1)
+                destination.write(raw[:raw_size])
+            require(len(raw) == raw_size, "Template checkout changed during capture")
+            canonical_file = execute(["git", "cat-file", "blob", operand], checkout, env, output,
+                                     name + "-blob", observations, stdout_limit=size)
+            id_file = execute(["git", "rev-parse", "--verify", operand], checkout, env, output,
+                              name + "-id", observations, stdout_limit=64)
+            canonical = canonical_file.read_bytes()
+            oid = id_file.read_bytes()
+            require(len(canonical) == size and re.fullmatch(rb"[0-9a-f]{40}\n", oid), "Invalid Git blob capture")
+            blob_id = hashlib.sha1(b"blob " + str(size).encode("ascii") + b"\0" + canonical).hexdigest()
+            require(oid == (blob_id + "\n").encode("ascii"), "Git blob object identity mismatch")
+            transform = template_transform(canonical, raw)
+            sidecar["records"].append({**identity, "gitBlobId": blob_id, "blobIdEvidence": reference(id_file),
+                                       "canonicalFile": reference(canonical_file), "rawFile": reference(raw_file),
+                                       "transform": transform})
+            records.append({**identity, "sha256": sha256(raw_file)})
+            write_json(target, sidecar)
+        sidecar["status"] = "completed"
+        write_json(target, sidecar)
+        validate_template_evidence(output, recipe, records, reference(target), observations)
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
+        sidecar["status"] = "failed"
+        sidecar["failure"] = str(error)[:4096]
+        raise
+    finally:
+        write_json(target, sidecar)
     return records
+
+
+def validate_template_evidence(folder, recipe, templates, sidecar_ref, observations):
+    def read_reference(ref, expected_name, limit):
+        require(isinstance(ref, dict) and set(ref) == {"fileName", "sha256"} and
+                ref["fileName"] == expected_name, "Unexpected template evidence reference")
+        file = folder / expected_name
+        bounded_template_file(file, limit)
+        data = file.read_bytes()
+        require(hashlib.sha256(data).hexdigest() == ref["sha256"], "Template evidence hash mismatch")
+        return data
+
+    raw_sidecar = read_reference(sidecar_ref, TEMPLATE_SIDECAR, 65536)
+    sidecar = read_json(folder / TEMPLATE_SIDECAR)
+    require(len(raw_sidecar) <= 65536 and isinstance(sidecar, dict) and
+            set(sidecar) == {"schemaVersion", "kind", "status", "records"} and
+            sidecar["schemaVersion"] == 1 and sidecar["kind"] == "mono-startup-template-evidence" and
+            sidecar["status"] == "completed", "Completed template evidence required")
+    identities = template_identities(recipe)
+    require(isinstance(templates, list) and isinstance(sidecar["records"], list) and
+            len(templates) == len(sidecar["records"]) == len(identities) == 11, "Incomplete template evidence chain")
+    require(isinstance(observations, list) and len(observations) <= 128 and
+            all(isinstance(item, dict) for item in observations), "Invalid template command observations")
+
+    def command(name, argv, cwd=None, limit=64, separate_stderr=True):
+        matches = [item for item in observations if item.get("name") == name]
+        require(len(matches) == 1, "Missing or duplicate template command")
+        item = matches[0]
+        require(set(item) == {"name", "argv", "cwd", "status", "exitCode", "logFileName", "logSha256"} and
+                item["argv"] == argv and item["status"] == "completed" and type(item["exitCode"]) is int and
+                item["exitCode"] == 0 and isinstance(item["cwd"], str) and item["cwd"] and
+                (cwd is None or item["cwd"] == cwd), "Template command identity mismatch")
+        data = read_reference({"fileName": item["logFileName"], "sha256": item["logSha256"]}, name + ".log", limit)
+        if separate_stderr:
+            require(bounded_template_file(folder / (name + ".stderr.log"), 65536) == 0, "Template command stderr is nonempty")
+        return item, data
+
+    contexts = {}
+    for repository, name, commit in (("dotnet/runtime", "source-head", recipe["source"]),
+                                    ("1ESPipelineTemplates/1ESPipelineTemplates", "template-head", recipe["expected_1es_commit"])):
+        item, data = command(name, ["git", "rev-parse", "HEAD"], separate_stderr=False)
+        require(data == (commit + "\n").encode("ascii"), "Template head context mismatch")
+        contexts[repository] = item["cwd"]
+    total = 0
+    canonical_identities = []
+    for index, (identity, record, template) in enumerate(zip(identities, sidecar["records"], templates)):
+        require(isinstance(record, dict) and set(record) == {"repository", "commit", "path", "gitBlobId",
+                "blobIdEvidence", "canonicalFile", "rawFile", "transform"} and
+                all(record[key] == value for key, value in identity.items()), "Template evidence chain identity mismatch")
+        require(isinstance(template, dict) and set(template) == {"repository", "commit", "path", "sha256"} and
+                all(template[key] == value for key, value in identity.items()), "Raw template chain identity mismatch")
+        name = f"template-{index:02d}"
+        operand = identity["commit"] + ":" + identity["path"]
+        cwd = contexts[identity["repository"]]
+        _, size_bytes = command(name + "-size", ["git", "cat-file", "-s", operand], cwd)
+        require(re.fullmatch(rb"[1-9][0-9]*\n", size_bytes), "Invalid template size evidence")
+        size = int(size_bytes)
+        raw_size = bounded_template_file(folder / (name + "-raw.bin"), TEMPLATE_BYTES)
+        require(size <= TEMPLATE_BYTES, "Canonical template exceeds byte bound")
+        total += raw_size + size + 41 + len(size_bytes)
+        require(total <= TEMPLATE_TOTAL_BYTES, "Template evidence exceeds aggregate bound")
+        blob_command, canonical = command(name + "-blob", ["git", "cat-file", "blob", operand], cwd, size)
+        id_command, oid = command(name + "-id", ["git", "rev-parse", "--verify", operand], cwd)
+        require(record["canonicalFile"] == {"fileName": blob_command["logFileName"], "sha256": blob_command["logSha256"]} and
+                record["blobIdEvidence"] == {"fileName": id_command["logFileName"], "sha256": id_command["logSha256"]},
+                "Template stdout reference mismatch")
+        raw = read_reference(record["rawFile"], name + "-raw.bin", TEMPLATE_BYTES)
+        require(len(canonical) == size and len(raw) == raw_size and
+                re.fullmatch(rb"[0-9a-f]{40}\n", oid), "Invalid template blob evidence")
+        blob_id = hashlib.sha1(b"blob " + str(size).encode("ascii") + b"\0" + canonical).hexdigest()
+        require(record["gitBlobId"] == blob_id and oid == (blob_id + "\n").encode("ascii"), "Template Git object mismatch")
+        require(template["sha256"] == record["rawFile"]["sha256"] and
+                record["transform"] == template_transform(canonical, raw), "Raw template transform/link mismatch")
+        canonical_identities.append({**identity, "gitBlobId": blob_id, "sha256": record["canonicalFile"]["sha256"]})
+    return canonical_identities
 
 
 def native_configuration(root, output, rid, marker):
@@ -345,7 +535,8 @@ def produce(root, recipe, ndk, ndk_revision, output=None):
     output = output or root / "artifacts/startup-metadata-producer"
     output.mkdir(parents=True)
     observations = []
-    receipt = {**recipe, "schemaVersion": 4, "kind": "mono-android-startup-build-receipt", "pipeline": None,
+    receipt = {**recipe, "schemaVersion": 5, "kind": "mono-android-startup-build-receipt", "pipeline": None,
+               "templateEvidence": None,
                "status": "started", "packages": [], "package_sidecars": [], "ndk_revision": ndk_revision,
                "native_configuration": {},
                "experiment_attempt": int(recipe["run_id"].split(".")[1]),
@@ -446,6 +637,7 @@ def produce(root, recipe, ndk, ndk_revision, output=None):
         packages.mkdir()
         for package in verified:
             shutil.copyfile(package, packages / package.name)
+        require(len(observations) <= 64, "Build command observations exceed bounds")
         receipt["status"] = "produced-unsigned-unadmitted"
     except (OSError, ValueError, subprocess.SubprocessError, zipfile.BadZipFile, ET.ParseError) as error:
         receipt["status"] = "failed"
@@ -459,9 +651,9 @@ def produce(root, recipe, ndk, ndk_revision, output=None):
 
 def validate_build_input(folder, recipe, identity):
     receipt = read_json(folder / "receipt.json")
-    require(isinstance(receipt, dict) and receipt.get("schemaVersion") == 4 and
+    require(isinstance(receipt, dict) and receipt.get("schemaVersion") == 5 and
             receipt.get("kind") == "mono-android-startup-build-receipt" and
-            receipt.get("status") == "produced-unsigned-unadmitted", "Successful schema-4 normal build receipt required")
+            receipt.get("status") == "produced-unsigned-unadmitted", "Successful schema-5 normal build receipt required")
     require(all(receipt.get(key) == value for key, value in recipe.items()), "Build receipt differs from reviewed plan")
     build = receipt.get("pipeline", {})
     require(isinstance(build, dict) and all(build.get(key) == identity[key] for key in
@@ -491,7 +683,8 @@ def validate_build_input(folder, recipe, identity):
                       if path.is_file() and path != folder / "receipt.json"}, "Uninventoried build evidence")
     require(sha256(folder / "source.patch") == receipt.get("patch_sha256"), "Build source patch mismatch")
     observations = receipt.get("command_observations", [])
-    require(isinstance(observations, list) and 0 < len(observations) <= 256, "Missing actual build command observations")
+    require(isinstance(observations, list) and 0 < len(observations) <= 64, "Missing actual build command observations")
+    validate_template_evidence(folder, recipe, receipt.get("templates"), receipt.get("templateEvidence"), observations)
     for command in recipe["commands"]:
         matches = [item for item in observations if isinstance(item, dict) and item.get("name") == command["name"]]
         require(len(matches) == 1 and matches[0].get("argv") == command["argv"] and
@@ -634,7 +827,8 @@ def test_sign(root, recipe, input_folder, output):
     evidence.mkdir()
     observations = []
     receipt = {
-        "schemaVersion": 2, "kind": "mono-android-startup-sign-receipt", "status": "started",
+        "schemaVersion": 3, "kind": "mono-android-startup-sign-receipt", "status": "started",
+        "templateEvidence": None,
         "source": recipe["source"], "pipeline": None,
         "publication": False, "guest_execution": False,
         "evidenceDirectories": {"build": "build", "presign": "build/packages", "postsign": "postsign"},
@@ -658,7 +852,11 @@ def test_sign(root, recipe, input_folder, output):
         require(source_evidence(root, recipe, env, evidence, observations) == build["patch_sha256"],
                 "Signing source patch differs from the build source")
         templates = template_evidence(root, recipe, env, evidence, observations)
-        require(templates == build.get("templates"), "Signing templates differ from the original build")
+        original_templates = validate_template_evidence(input_folder, recipe, build["templates"],
+                                                       build["templateEvidence"], build["command_observations"])
+        signing_templates = validate_template_evidence(evidence, recipe, templates,
+                                                      reference(evidence / TEMPLATE_SIDECAR), observations)
+        require(signing_templates == original_templates, "Signing canonical templates differ from the original build")
         # The shared signer schema retains raw job identity, not the source-specific phase fields.
         signer = {key: identity[key] for key in ("organization", "project", "definitionId", "pipelinePath",
                                                 "pipelineCommit", "buildId", "jobAttempt", "jobName")}
@@ -732,6 +930,7 @@ def test_sign(root, recipe, input_folder, output):
                 evidence / f"sign.{rid}.receipt.json", verification_receipt))
             if signature["verificationExitCode"] != 0:
                 failed_verification.append(rid)
+        require(len(observations) <= 128, "Signing command observations exceed bounds")
         receipt["status"] = "produced-verification-failed" if failed_verification else "verified-policy-unqualified"
         require(not failed_verification, "Standard verification failed for " + ", ".join(failed_verification) +
                 "; signed bytes, inventories and actual failures are retained without trust changes")

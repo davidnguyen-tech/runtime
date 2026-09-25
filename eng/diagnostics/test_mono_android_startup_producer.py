@@ -534,7 +534,7 @@ class ProducerTests(unittest.TestCase):
                     producer.produce(root, self.recipe(), root / "missing-ndk", "28.2.13676358")
             output = root / "artifacts/startup-metadata-producer"
             receipt = json.loads((output / "receipt.json").read_text())
-            self.assertEqual(receipt["schemaVersion"], 4)
+            self.assertEqual(receipt["schemaVersion"], 5)
             self.assertEqual(receipt["status"], "failed")
             self.assertNotIn("providerContext", receipt)
             observation, = receipt["command_observations"]
@@ -622,7 +622,7 @@ class ProducerTests(unittest.TestCase):
                                 producer.produce(root, self.recipe(), base / "ndk", "27.2.12479018", output)
                         external.assert_not_called()
                     receipt = producer.read_json(output / "receipt.json")
-                    self.assertEqual(receipt["schemaVersion"], 2 if signing else 4)
+                    self.assertEqual(receipt["schemaVersion"], 3 if signing else 5)
                     self.assertEqual(receipt["status"], "failed")
                     self.assertIsNone(receipt["pipeline"])
                     self.assertEqual(receipt["packages"], [])
@@ -819,6 +819,238 @@ class ProducerTests(unittest.TestCase):
         native = next(node for node in target.iter("RuntimeFiles") if node.attrib.get("Condition") == "'%(RuntimeFiles.IsNative)' == 'true'")
         self.assertEqual(native.find("TargetPath").text, "runtimes/$(RuntimeIdentifier)/native")
 
+    def template_fixture(self, output, observations, crlf=False):
+        """Synthetic command attestations; real-Git capture is exercised separately."""
+        recipe = self.recipe()
+        identities = producer.template_identities(recipe)
+        sidecar = {"schemaVersion": 1, "kind": "mono-startup-template-evidence", "status": "completed", "records": []}
+        templates = []
+
+        def observation(name, argv, cwd, data, stderr=False):
+            log = output / (name + ".log")
+            log.write_bytes(data)
+            if stderr:
+                (output / (name + ".stderr.log")).write_bytes(b"")
+            observations.append({"name": name, "argv": argv, "cwd": cwd, "status": "completed", "exitCode": 0,
+                                 "logFileName": log.name, "logSha256": producer.sha256(log)})
+            return producer.reference(log)
+
+        observation("source-head", ["git", "rev-parse", "HEAD"], "synthetic-runtime", (SOURCE + "\n").encode())
+        observation("template-head", ["git", "rev-parse", "HEAD"], "synthetic-external",
+                    (producer.EXPECTED_1ES_COMMIT + "\n").encode())
+        for index, identity in enumerate(identities):
+            canonical = ("# SYNTHETIC TEMPLATE INPUT, NOT ACTUAL GIT ATTESTATION\n" + identity["path"] + "\n").encode()
+            raw = canonical.replace(b"\n", b"\r\n") if crlf else canonical
+            cwd = "synthetic-runtime" if index < 10 else "synthetic-external"
+            operand = identity["commit"] + ":" + identity["path"]
+            name = f"template-{index:02d}"
+            raw_file = output / (name + "-raw.bin")
+            raw_file.write_bytes(raw)
+            blob_id = producer.hashlib.sha1(b"blob " + str(len(canonical)).encode() + b"\0" + canonical).hexdigest()
+            observation(name + "-size", ["git", "cat-file", "-s", operand], cwd, (str(len(canonical)) + "\n").encode(), True)
+            blob_ref = observation(name + "-blob", ["git", "cat-file", "blob", operand], cwd, canonical, True)
+            id_ref = observation(name + "-id", ["git", "rev-parse", "--verify", operand], cwd, (blob_id + "\n").encode(), True)
+            sidecar["records"].append({**identity, "gitBlobId": blob_id, "blobIdEvidence": id_ref,
+                                       "canonicalFile": blob_ref, "rawFile": producer.reference(raw_file),
+                                       "transform": "lf-to-crlf" if crlf else "identity"})
+            templates.append({**identity, "sha256": producer.sha256(raw_file)})
+        producer.write_json(output / producer.TEMPLATE_SIDECAR, sidecar)
+        return templates
+
+    def real_template_fixture(self, base, crlf=False):
+        """Create isolated Git objects and exercise actual binary producer capture."""
+        source = base / "source"
+        external = base / "external"
+        output = base / "evidence"
+        output.mkdir(parents=True)
+        commits = []
+        for root, paths in ((source, producer.TEMPLATE_PATHS), (external, ["v1/1ES.Official.PipelineTemplate.yml"])):
+            root.mkdir()
+            def git(*args):
+                return producer.subprocess.run(["git", *args], cwd=root, env=dict(producer.os.environ),
+                                               check=True, stdout=producer.subprocess.PIPE,
+                                               stderr=producer.subprocess.PIPE).stdout
+            git("init", "--quiet")
+            git("config", "core.autocrlf", "true")
+            for index, path in enumerate(paths):
+                file = root / path
+                file.parent.mkdir(parents=True, exist_ok=True)
+                file.write_bytes((b"\xef\xbb\xbf" if index == 1 else b"") +
+                                 b"# Synthetic real-Git test only\nvalue: fixture\n")
+            git("add", "--", *paths)
+            tree = git("write-tree").decode().strip()
+            commit = git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+                         "commit-tree", tree, "-m", "Synthetic template test\n\nCo-authored-by: Copilot App <223556219+Copilot@users.noreply.github.com>").decode().strip()
+            git("update-ref", "HEAD", commit)
+            if crlf:
+                for path in paths:
+                    (root / path).unlink()
+                git("checkout-index", "--force", "--", *paths)
+                git("add", "--", *paths)
+                self.assertEqual(git("write-tree").decode().strip(), tree)
+            commits.append(commit)
+        recipe = self.recipe(source=commits[0])
+        recipe["expected_1es_commit"] = commits[1]
+        env = dict(producer.os.environ, STARTUP_1ES_COMMIT=commits[1], STARTUP_1ES_ROOT=str(external))
+        observations = []
+        producer.execute(["git", "rev-parse", "HEAD"], source, env, output, "source-head", observations)
+        return source, recipe, env, output, observations
+
+    def test_real_git_template_capture_and_finite_transforms(self):
+        for crlf in (False, True):
+            with self.subTest(crlf=crlf), tempfile.TemporaryDirectory() as folder:
+                source, recipe, env, output, observations = self.real_template_fixture(Path(folder), crlf)
+                templates = producer.template_evidence(source, recipe, env, output, observations)
+                ref = producer.reference(output / producer.TEMPLATE_SIDECAR)
+                identities = producer.validate_template_evidence(output, recipe, templates, ref, observations)
+                sidecar = producer.read_json(output / producer.TEMPLATE_SIDECAR)
+                self.assertEqual(len(identities), 11)
+                self.assertEqual(len(observations), 36)  # source head + external head/status + 33 captures
+                self.assertLessEqual(27 + len(observations) - 3, 64)
+                for record, raw_record in zip(sidecar["records"], templates):
+                    self.assertEqual(record["transform"], "lf-to-crlf" if crlf else "identity")
+                    self.assertEqual(record["rawFile"]["sha256"], raw_record["sha256"])
+                    self.assertEqual({key: record[key] for key in ("repository", "commit", "path")},
+                                     {key: raw_record[key] for key in ("repository", "commit", "path")})
+                self.assertTrue((output / "template-01-blob.log").read_bytes().startswith(b"\xef\xbb\xbf"))
+                self.assertTrue((output / "template-01-raw.bin").read_bytes().startswith(b"\xef\xbb\xbf"))
+
+    def test_template_transform_rejects_non_checkout_changes(self):
+        for canonical in (b"value\nnext\n", b"\xef\xbb\xbfvalue\nnext\n"):
+            self.assertEqual(producer.template_transform(canonical, canonical), "identity")
+            self.assertEqual(producer.template_transform(canonical, canonical.replace(b"\n", b"\r\n")), "lf-to-crlf")
+            for raw in (canonical.rstrip(), canonical + b" ", canonical.replace(b"\n", b"\r"),
+                        canonical.replace(b"\n", b"\r\n", 1), canonical + b"\xef\xbb\xbf",
+                        canonical.removeprefix(b"\xef\xbb\xbf") if canonical.startswith(b"\xef") else b"\xef\xbb\xbf" + canonical):
+                with self.subTest(canonical=canonical, raw=raw), self.assertRaises(ValueError):
+                    producer.template_transform(canonical, raw)
+        for canonical, raw in ((b"\xff\n", b"\xff\n"), (b"a\0\n", b"a\0\n"),
+                               (b"a\r\nb\n", b"a\r\nb\r\n"), (b"value", b"value\r\n")):
+            with self.subTest(canonical=canonical), self.assertRaises(ValueError):
+                producer.template_transform(canonical, raw)
+
+    def test_template_capture_failure_preserves_discriminator(self):
+        with tempfile.TemporaryDirectory() as folder:
+            source, recipe, env, output, observations = self.real_template_fixture(Path(folder))
+            raw = source / producer.TEMPLATE_PATHS[0]
+            raw.write_bytes(b"altered template\n")
+            with self.assertRaisesRegex(ValueError, "Unsupported template"):
+                producer.template_evidence(source, recipe, env, output, observations)
+            sidecar = producer.read_json(output / producer.TEMPLATE_SIDECAR)
+            self.assertEqual(sidecar["status"], "failed")
+            self.assertEqual(sidecar["records"], [])
+            self.assertEqual((output / "template-00-raw.bin").read_bytes(), raw.read_bytes())
+            self.assertTrue((output / "template-00-blob.log").is_file())
+            self.assertTrue((output / "template-00-id.log").is_file())
+            receipt = {"templateEvidence": None}
+            producer.persist_receipt(output, receipt)
+            self.assertEqual(receipt["templateEvidence"], producer.reference(output / producer.TEMPLATE_SIDECAR))
+            self.assertIn(producer.TEMPLATE_SIDECAR, {item["path"] for item in receipt["retained_files"]})
+
+    def test_template_pre_read_limits_and_exact_chain(self):
+        expected = [
+            "eng/pipelines/runtime-official.yml", "eng/pipelines/mono-android-startup-metadata.yml",
+            "eng/pipelines/common/templates/pipeline-with-resources.yml",
+            "eng/pipelines/common/templates/templateDispatch.yml",
+            "eng/pipelines/common/templates/template1es-mono-startup.yml",
+            "eng/pipelines/common/templates/template1es-body.yml",
+            "eng/common/templates-official/job/job.yml", "eng/common/core-templates/job/job.yml",
+            "eng/common/core-templates/steps/install-microbuild.yml", "eng/Signing.props",
+            "v1/1ES.Official.PipelineTemplate.yml",
+        ]
+        self.assertEqual([item["path"] for item in producer.template_identities(self.recipe())], expected)
+        for limit_kind in ("file", "aggregate"):
+            with self.subTest(limit=limit_kind), tempfile.TemporaryDirectory() as folder:
+                source, recipe, env, output, observations = self.real_template_fixture(Path(folder))
+                field = "TEMPLATE_BYTES" if limit_kind == "file" else "TEMPLATE_TOTAL_BYTES"
+                with patch.object(producer, field, 1), self.assertRaisesRegex(ValueError, "bound"):
+                    producer.template_evidence(source, recipe, env, output, observations)
+                self.assertFalse((output / "template-00-raw.bin").exists())
+                self.assertFalse((output / "template-00-blob.log").exists())
+                self.assertEqual(producer.read_json(output / producer.TEMPLATE_SIDECAR)["status"], "failed")
+        with tempfile.TemporaryDirectory() as folder:
+            output = Path(folder)
+            observations = []
+            templates = self.template_fixture(output, observations)
+            reference = producer.reference(output / producer.TEMPLATE_SIDECAR)
+            with patch.object(producer, "TEMPLATE_TOTAL_BYTES", 1), self.assertRaisesRegex(ValueError, "aggregate"):
+                producer.validate_template_evidence(output, self.recipe(), templates, reference, observations)
+            for changed in (observations + [observations[0]], observations + [None]):
+                with self.assertRaises(ValueError):
+                    producer.validate_template_evidence(output, self.recipe(), templates, reference, changed)
+            templates[0]["sha256"] = "0" * 64
+            with self.assertRaisesRegex(ValueError, "link"):
+                producer.validate_template_evidence(output, self.recipe(), templates, reference, observations)
+
+    def test_template_binary_capture_bounds_and_stderr(self):
+        for stdout_bytes, stderr_bytes, limit in ((131073, 0, 65537), (20, 0, 8), (0, 65537, 64), (0, 1, 64)):
+            with self.subTest(stdout=stdout_bytes, stderr=stderr_bytes), tempfile.TemporaryDirectory() as folder:
+                root = Path(folder)
+                observations = []
+                command = [producer.sys.executable, "-c",
+                           f"import os; os.write(1,b'x'*{stdout_bytes}); os.write(2,b'y'*{stderr_bytes})"]
+                with self.assertRaises(ValueError):
+                    producer.execute(command, root, dict(producer.os.environ), root, "capture", observations,
+                                     stdout_limit=limit)
+                self.assertLessEqual((root / "capture.log").stat().st_size, limit)
+                self.assertLessEqual((root / "capture.stderr.log").stat().st_size, 65536)
+                self.assertEqual(len(observations), 1)
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            data = b"\xef\xbb\xbfvalue\r\nnext\n"
+            producer.execute([producer.sys.executable, "-c", f"import os; os.write(1,{data!r})"],
+                             root, dict(producer.os.environ), root, "capture", [], stdout_limit=len(data))
+            self.assertEqual((root / "capture.log").read_bytes(), data)
+
+    def test_template_proof_rejects_forged_fields_and_commands(self):
+        with tempfile.TemporaryDirectory() as folder:
+            output = Path(folder)
+            observations = []
+            templates = self.template_fixture(output, observations, crlf=True)
+            original = producer.read_json(output / producer.TEMPLATE_SIDECAR)
+            producer.validate_template_evidence(output, self.recipe(), templates,
+                                                producer.reference(output / producer.TEMPLATE_SIDECAR), observations)
+            for mutation in ("oid", "transform", "reorder", "duplicate", "missing", "extra"):
+                sidecar = json.loads(json.dumps(original))
+                if mutation == "oid":
+                    sidecar["records"][0]["gitBlobId"] = "0" * 40
+                elif mutation == "transform":
+                    sidecar["records"][0]["transform"] = "identity"
+                elif mutation == "reorder":
+                    sidecar["records"].reverse()
+                elif mutation == "duplicate":
+                    sidecar["records"][1] = sidecar["records"][0]
+                elif mutation == "missing":
+                    sidecar["records"].pop()
+                else:
+                    sidecar["records"].append(sidecar["records"][0])
+                producer.write_json(output / producer.TEMPLATE_SIDECAR, sidecar)
+                with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                    producer.validate_template_evidence(output, self.recipe(), templates,
+                                                        producer.reference(output / producer.TEMPLATE_SIDECAR), observations)
+            producer.write_json(output / producer.TEMPLATE_SIDECAR, original)
+            for name, key, value in (("template-00-blob", "cwd", "wrong-repository"),
+                                     ("template-00-id", "argv", ["git", "rev-parse", "HEAD"]),
+                                     ("source-head", "status", "failed"), ("template-head", "exitCode", 1)):
+                changed = json.loads(json.dumps(observations))
+                next(item for item in changed if item["name"] == name)[key] = value
+                with self.subTest(name=name, key=key), self.assertRaises(ValueError):
+                    producer.validate_template_evidence(output, self.recipe(), templates,
+                                                        producer.reference(output / producer.TEMPLATE_SIDECAR), changed)
+            for name, data in (("template-00-size.log", b"0001\n"), ("source-head.log", (SOURCE + "\r\n").encode()),
+                               ("template-00-id.log", b"0" * 40 + b"\n"), ("template-00-blob.stderr.log", b"warning")):
+                file = output / name
+                before = file.read_bytes()
+                file.write_bytes(data)
+                changed = json.loads(json.dumps(observations))
+                for item in changed:
+                    if item["logFileName"] == name:
+                        item["logSha256"] = producer.sha256(file)
+                with self.subTest(name=name), self.assertRaises(ValueError):
+                    producer.validate_template_evidence(output, self.recipe(), templates,
+                                                        producer.reference(output / producer.TEMPLATE_SIDECAR), changed)
+                file.write_bytes(before)
+
     def build_fixture(self, folder, build_attempt=1):
         folder.mkdir()
         packages = folder / "packages"
@@ -826,12 +1058,11 @@ class ProducerTests(unittest.TestCase):
         recipe = self.recipe()
         with patch.dict(producer.os.environ, {**self.pipeline_environment(), "SYSTEM_JOBATTEMPT": str(build_attempt)}):
             identity = producer.pipeline_identity(SOURCE, "BuildRuntimePacks")
-        receipt = {**recipe, "schemaVersion": 4, "kind": "mono-android-startup-build-receipt",
+        receipt = {**recipe, "schemaVersion": 5, "kind": "mono-android-startup-build-receipt",
                    "status": "produced-unsigned-unadmitted", "pipeline": identity,
                    "packages": [], "package_sidecars": [], "command_observations": [], "native_configuration": {},
-                   "experiment_attempt": 1,
-                   "templates": [{"repository": "1ESPipelineTemplates/1ESPipelineTemplates", "commit": producer.EXPECTED_1ES_COMMIT,
-                                  "path": "v1/1ES.Official.PipelineTemplate.yml", "sha256": "d" * 64}]}
+                   "experiment_attempt": 1, "templateEvidence": None}
+        receipt["templates"] = self.template_fixture(folder, receipt["command_observations"])
         (folder / "source.patch").write_text("SYNTHETIC TEST INPUT, NOT AN ACTUAL SOURCE PATCH\n", encoding="ascii")
         receipt["patch_sha256"] = producer.sha256(folder / "source.patch")
         producer.write_json(folder / "fixture-notice.json", {
@@ -909,9 +1140,10 @@ class ProducerTests(unittest.TestCase):
                 producer.write_json(root / "input/receipt.json", changed)
                 with self.subTest(key=key, value=value), self.assertRaises(ValueError):
                     producer.validate_build_input(root / "input", self.recipe(), identity)
-            producer.write_json(root / "input/receipt.json", {**build, "schemaVersion": 3})
-            with self.assertRaisesRegex(ValueError, "schema-4"):
-                producer.validate_build_input(root / "input", self.recipe(), identity)
+            for version in (3, 4):
+                producer.write_json(root / "input/receipt.json", {**build, "schemaVersion": version})
+                with self.assertRaisesRegex(ValueError, "schema-5"):
+                    producer.validate_build_input(root / "input", self.recipe(), identity)
             producer.write_json(root / "input/receipt.json", build)
             for value in (None, "", "1", "02", "2\n", "2147483648"):
                 with self.subTest(producer_attempt=value), patch.dict(producer.os.environ):
@@ -1027,7 +1259,8 @@ class ProducerTests(unittest.TestCase):
         with patch.dict(producer.os.environ, environment), \
                 patch.object(producer.sys, "platform", "win32"), \
                 patch.object(producer, "source_evidence", return_value=build["patch_sha256"]), \
-                patch.object(producer, "template_evidence", return_value=build["templates"]), \
+                patch.object(producer, "template_evidence", side_effect=lambda root, recipe, env, output, observations:
+                             self.template_fixture(output, observations, crlf=True)), \
                 patch.object(producer.subprocess, "run", side_effect=test_only_command):
             if sign_exit or verification_exit or verifier_launch_failure:
                 with self.assertRaises((ValueError, FileNotFoundError)):
@@ -1041,13 +1274,16 @@ class ProducerTests(unittest.TestCase):
             with self.subTest(exit_code=exit_code), tempfile.TemporaryDirectory() as folder:
                 output = self.sign_fixture(Path(folder), verification_exit=exit_code, sign_attempt=3, build_attempt=2)
                 root = producer.read_json(output / "receipt.json")
-                self.assertEqual(root["schemaVersion"], 2)
+                self.assertEqual(root["schemaVersion"], 3)
                 self.assertNotIn("providerContext", root)
                 self.assertEqual(root["pipeline"]["phaseName"], "TestSignRuntimePacks")
                 self.assertEqual(root["pipeline"]["jobName"], "__default")
                 build = producer.read_json(output / "build/receipt.json")
                 self.assertEqual(build["pipeline"]["jobAttempt"], 2)
                 self.assertEqual(build["experiment_attempt"], 1)
+                self.assertNotEqual(root["signer"]["templates"], build["templates"])
+                self.assertLessEqual(len(build["command_observations"]), 64)
+                self.assertLessEqual(len(root["command_observations"]), 128)
                 self.assertEqual(root["status"], "verified-policy-unqualified" if exit_code == 0 else "produced-verification-failed")
                 self.assertFalse(root["publication"])
                 self.assertEqual(len(root["packages"]), 2)

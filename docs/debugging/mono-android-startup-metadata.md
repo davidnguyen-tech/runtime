@@ -255,8 +255,8 @@ The latter preserves `build/` byte-for-byte, unsigned packages in
 `build/packages/`, and signed outputs/evidence in `postsign/`. The post-sign
 build-receipt alias is an identical copy, not a rewrite of its relative refs.
 
-The source-specific build root is schema **4**,
-`mono-android-startup-build-receipt`; the signing root is schema **2**,
+The source-specific build root is schema **5**,
+`mono-android-startup-build-receipt`; the signing root is schema **3**,
 `mono-android-startup-sign-receipt`. Both retain actual command observations,
 including failure/launch failure. The latter also records evidence-directory
 roles, real per-RID signing binlogs, evaluated signing selection, and the
@@ -297,10 +297,68 @@ attempt 3 are valid when the selected build dependency attempt is 2.
 The shared signer's closed ten-field shape remains unchanged: only the original
 eight pipeline identity fields, `requestedSignType`, and `templates` are emitted.
 Stage/phase fields stay in the source-specific roots, and raw `jobName` is never
-relabeled. Consumers must explicitly require build schema 4/sign schema 2,
+relabeled. Consumers must explicitly require build schema 5/sign schema 3,
 validate their exact stage/phase roles, and compare only the original eight
 identity fields with the shared signer. Historical schema 3/1 receipts, including
-3087046, remain unchanged and are not retrospectively phase-qualified.
+3087046, remain unchanged and are not retrospectively phase-qualified. Schema
+4/2 receipts, including 3087132, are not retrospectively qualified for the new
+template provenance requirements.
+
+Each root adds `templateEvidence`, a `{fileName, sha256}` reference to
+`template-evidence.json` in the build root or signing `postsign/` directory.
+Its schema-1 `mono-startup-template-evidence` record contains `status` and an
+ordered `records` array. Only `completed` evidence with all eleven entries is
+eligible for comparison. The ordered runtime paths are `runtime-official.yml`,
+`mono-android-startup-metadata.yml`, `pipeline-with-resources.yml`,
+`templateDispatch.yml`, `template1es-mono-startup.yml`, `template1es-body.yml`,
+the official/core job templates, `install-microbuild.yml`, and `eng/Signing.props`;
+the final entry is the pinned external `v1/1ES.Official.PipelineTemplate.yml`.
+The exact paths/order are enforced by the producer and its tests. The inactive
+default `template1es.yml` is not evidence of the active diagnostic route.
+This is not a claim that every transitive central template is copied.
+
+Every entry retains `repository`, `commit`, `path`, `gitBlobId`, `blobIdEvidence`,
+`canonicalFile`, `rawFile`, and `transform`. File references have only
+`fileName` and `sha256`; all files are unique leaves inventoried in the owning
+root. Canonical means the **untouched Git blob**, not normalized text.
+Binary `git cat-file -s`, `git cat-file blob`, and `git rev-parse --verify`
+observations bind the exact `commit:path`, repository working directory,
+canonical bytes, size, and object ID. Their stdout and stderr are retained
+separately; successful proof requires empty stderr. Unique successful
+`source-head` / `template-head` observations bind each working directory to
+the expected commit. Object-ID output is exactly forty lowercase hexadecimal
+bytes plus LF; size output is positive decimal plus LF. Blob identity is
+recomputed using Git's `blob <length><NUL><bytes>` SHA-1 framing.
+These recorded Git operations attest commit/path resolution; hashing a blob
+alone is not independent cryptographic proof of Git-tree inclusion.
+
+Raw checkout SHA-256 remains the meaning of the unchanged shared four-field
+template record. It must match its retained raw bytes independently in each
+operation. Strict UTF-8 without NUL is required. The only transforms are exact
+byte `identity`, or `lf-to-crlf`: a canonical blob with at least one LF and no
+CR expanded by replacing every LF with CRLF. Every other byte, including any
+existing BOM, is preserved. Mixed newline conversion, BOM stripping, whitespace
+trimming, YAML reserialization and Git clean filters are not accepted.
+Only after both raw-to-blob proofs pass are ordered repository/commit/path,
+Git object ID and canonical SHA-256 compared across build and sign.
+
+Payloads are limited to 1 MiB each; canonical/raw/ID/size bytes together are
+limited to 16 MiB. Raw file size and Git blob size are checked and budgeted
+before payload reads, then checked against captured lengths. Size/ID stdout
+is capped at 64 bytes, stderr and sidecar at 64 KiB. The thirty-three additional
+Git commands bring the current build ledger to sixty observations, within its
+existing sixty-four limit; signing remains bounded at 128. Capture failures
+retain bounded partial byte streams, commands and a failed sidecar with at
+most 4096 failure-text characters before the root reference is finalized.
+No success-shaped shared receipt is synthesized on failure.
+
+Run 3087132 proves the phase/attempt identity fix and two unsigned builds, but
+did not retain signing template bytes or hashes before its comparison failed.
+Its exact mismatch cannot be reconstructed. The eight retained runtime hashes
+match LF Git blobs, and controlled Git CRLF checkout reproduces differing raw
+hashes; this is not retrospective proof of the signing agent's bytes. The
+external pinned blob was independently verified as 8116 bytes, 182 LF, no CR
+and no BOM, with SHA-256 matching that run's build receipt.
 
 After fresh-output and input/output-disjointness checks establish a safe
 destination, failed preflight retains a `failed` root with no package or common
