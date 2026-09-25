@@ -98,7 +98,7 @@ resources:
       type: git
       name: internal/dotnet-performance
       # Restore the merged/default performance ref before merging this runtime branch.
-      ref: 588c9e44d8577147faf29cd98c4f5506d52d895f
+      ref: 36426b7c10b305cb2d67b97e70235cebb663306f
 
 variables:
 - template: /eng/pipelines/common/variables.yml
