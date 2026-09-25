@@ -26,11 +26,12 @@ class ProducerTests(unittest.TestCase):
         args.update(overrides)
         return producer.plan(**args)
 
-    def pipeline_environment(self, job="BuildRuntimePacks"):
+    def pipeline_environment(self, phase="BuildRuntimePacks"):
         return {"BUILD_REASON": "Manual", "SYSTEM_TEAMPROJECT": "internal",
                 "BUILD_REPOSITORY_ID": producer.REPOSITORY_ID, "SYSTEM_DEFINITIONID": "679",
                 "BUILD_SOURCEVERSION": SOURCE, "BUILD_SOURCEBRANCH": "refs/heads/test-only-diagnostics",
-                "BUILD_BUILDID": "123", "SYSTEM_JOBATTEMPT": "1", "SYSTEM_JOBNAME": job,
+                "BUILD_BUILDID": "123", "SYSTEM_JOBATTEMPT": "1", "SYSTEM_JOBNAME": "__default",
+                "SYSTEM_STAGENAME": "MonoStartupMetadata", "SYSTEM_PHASENAME": phase, "PRODUCER_ATTEMPT": "1",
                 "BUILD_BUILDNUMBER": "20260924.1", "STARTUP_EXPERIMENT_ATTEMPT": "1"}
 
     def test_disabled(self):
@@ -533,8 +534,9 @@ class ProducerTests(unittest.TestCase):
                     producer.produce(root, self.recipe(), root / "missing-ndk", "28.2.13676358")
             output = root / "artifacts/startup-metadata-producer"
             receipt = json.loads((output / "receipt.json").read_text())
-            self.assertEqual(receipt["schemaVersion"], 3)
+            self.assertEqual(receipt["schemaVersion"], 4)
             self.assertEqual(receipt["status"], "failed")
+            self.assertNotIn("providerContext", receipt)
             observation, = receipt["command_observations"]
             self.assertEqual(observation["argv"], ["git", "rev-parse", "HEAD"])
             self.assertEqual(observation["status"], "failed")
@@ -551,7 +553,7 @@ class ProducerTests(unittest.TestCase):
 
     def test_existing_definition_and_feature_branch_gate(self):
         with patch.dict(producer.os.environ, self.pipeline_environment()):
-            identity = producer.pipeline_identity(SOURCE)
+            identity = producer.pipeline_identity(SOURCE, "BuildRuntimePacks")
             self.assertEqual(identity["definitionId"], 679)
             self.assertEqual(identity["pipelineCommit"], SOURCE)
             for key, values in {
@@ -568,7 +570,72 @@ class ProducerTests(unittest.TestCase):
                 for value in values:
                     with self.subTest(key=key, value=value), patch.dict(producer.os.environ, {key: value}):
                         with self.assertRaises(ValueError):
-                            producer.pipeline_identity(SOURCE)
+                            producer.pipeline_identity(SOURCE, "BuildRuntimePacks")
+
+    def test_provider_phase_and_raw_job_instance_identity(self):
+        for phase in ("ValidateInputs", "BuildRuntimePacks", "TestSignRuntimePacks"):
+            with self.subTest(phase=phase), patch.dict(producer.os.environ, self.pipeline_environment(phase)):
+                identity = producer.pipeline_identity(SOURCE, phase)
+                self.assertEqual(set(identity), {"organization", "project", "definitionId", "pipelinePath",
+                                                "pipelineCommit", "buildId", "jobAttempt", "jobName",
+                                                "stageName", "phaseName"})
+                self.assertEqual(identity["jobName"], "__default")
+                self.assertEqual(identity["phaseName"], phase)
+                self.assertEqual(identity["stageName"], "MonoStartupMetadata")
+                for key, values in {
+                    "SYSTEM_STAGENAME": [None, "", "AnotherStage", "MonoStartupMetadata\n"],
+                    "SYSTEM_PHASENAME": [None, "", "AnotherRole", phase + "\n"],
+                    "SYSTEM_JOBNAME": [None, "", "bad/name", "x" * 257, "__default\n"],
+                }.items():
+                    for value in values:
+                        with self.subTest(key=key, value=value), patch.dict(producer.os.environ):
+                            if value is None:
+                                producer.os.environ.pop(key, None)
+                            else:
+                                producer.os.environ[key] = value
+                            with self.assertRaises(ValueError):
+                                producer.pipeline_identity(SOURCE, phase)
+
+    def test_failed_identity_preflight_retains_bounded_raw_context(self):
+        for signing in (False, True):
+            phase = "TestSignRuntimePacks" if signing else "BuildRuntimePacks"
+            for key, value in (("SYSTEM_PHASENAME", "AnotherRole"), ("SYSTEM_STAGENAME", None),
+                               ("SYSTEM_JOBNAME", "x" * 257), ("SYSTEM_JOBATTEMPT", "1\n"),
+                               ("BUILD_SOURCEVERSION", "b" * 40), ("SYSTEM_DEFINITIONID", "1104")):
+                with self.subTest(signing=signing, key=key), tempfile.TemporaryDirectory() as folder:
+                    base = Path(folder)
+                    root = base / "source"
+                    root.mkdir()
+                    output = base / "output"
+                    environment = self.pipeline_environment(phase)
+                    with patch.dict(producer.os.environ, environment), \
+                            patch.object(producer.sys, "platform", "win32" if signing else "linux"), \
+                            patch.object(producer.subprocess, "run") as external:
+                        if value is None:
+                            producer.os.environ.pop(key, None)
+                        else:
+                            producer.os.environ[key] = value
+                        with self.assertRaises(ValueError):
+                            if signing:
+                                producer.test_sign(root, self.recipe(), base / "input", output)
+                            else:
+                                producer.produce(root, self.recipe(), base / "ndk", "27.2.12479018", output)
+                        external.assert_not_called()
+                    receipt = producer.read_json(output / "receipt.json")
+                    self.assertEqual(receipt["schemaVersion"], 2 if signing else 4)
+                    self.assertEqual(receipt["status"], "failed")
+                    self.assertIsNone(receipt["pipeline"])
+                    self.assertEqual(receipt["packages"], [])
+                    self.assertEqual(receipt["command_observations"], [])
+                    self.assertEqual(receipt["retained_files"], [])
+                    self.assertFalse(list(output.rglob("postsign.*.json")))
+                    context = receipt["providerContext"]
+                    self.assertEqual(set(context), {"stageName", "phaseName", "jobName", "jobAttempt", "truncatedFields"})
+                    self.assertEqual(context["truncatedFields"], ["jobName"] if key == "SYSTEM_JOBNAME" else [])
+                    for field, variable in (("stageName", "SYSTEM_STAGENAME"), ("phaseName", "SYSTEM_PHASENAME"),
+                                            ("jobName", "SYSTEM_JOBNAME"), ("jobAttempt", "SYSTEM_JOBATTEMPT")):
+                        raw = value if key == variable else environment[variable]
+                        self.assertEqual(context[field], raw[:256] if raw is not None else None)
 
     def configuration_fixture(self, folder, output, rid):
         directory = folder / f"artifacts/obj/mono/android.{producer.RID_ARCH[rid][0]}.Release"
@@ -752,14 +819,14 @@ class ProducerTests(unittest.TestCase):
         native = next(node for node in target.iter("RuntimeFiles") if node.attrib.get("Condition") == "'%(RuntimeFiles.IsNative)' == 'true'")
         self.assertEqual(native.find("TargetPath").text, "runtimes/$(RuntimeIdentifier)/native")
 
-    def build_fixture(self, folder):
+    def build_fixture(self, folder, build_attempt=1):
         folder.mkdir()
         packages = folder / "packages"
         packages.mkdir()
         recipe = self.recipe()
-        with patch.dict(producer.os.environ, self.pipeline_environment()):
-            identity = producer.pipeline_identity(SOURCE)
-        receipt = {**recipe, "schemaVersion": 3, "kind": "mono-android-startup-build-receipt",
+        with patch.dict(producer.os.environ, {**self.pipeline_environment(), "SYSTEM_JOBATTEMPT": str(build_attempt)}):
+            identity = producer.pipeline_identity(SOURCE, "BuildRuntimePacks")
+        receipt = {**recipe, "schemaVersion": 4, "kind": "mono-android-startup-build-receipt",
                    "status": "produced-unsigned-unadmitted", "pipeline": identity,
                    "packages": [], "package_sidecars": [], "command_observations": [], "native_configuration": {},
                    "experiment_attempt": 1,
@@ -800,12 +867,13 @@ class ProducerTests(unittest.TestCase):
         producer.persist_receipt(folder, receipt)
         return receipt
 
+    @patch.dict(producer.os.environ, {"PRODUCER_ATTEMPT": "1"})
     def test_build_artifact_binding_and_duplicate_json(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             build = self.build_fixture(root / "input")
             with patch.dict(producer.os.environ, self.pipeline_environment("TestSignRuntimePacks")):
-                identity = producer.pipeline_identity(SOURCE)
+                identity = producer.pipeline_identity(SOURCE, "TestSignRuntimePacks")
             self.assertEqual(producer.validate_build_input(root / "input", self.recipe(), identity), build)
             for key, value in [("buildId", 124), ("pipelineCommit", "b" * 40)]:
                 with self.subTest(key=key), self.assertRaisesRegex(ValueError, "exact producer invocation"):
@@ -823,10 +891,96 @@ class ProducerTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "Duplicate JSON"):
                 producer.read_json(duplicate)
 
-    def sign_fixture(self, folder, verification_exit=0, sign_exit=0, verifier_launch_failure=False, sign_attempt=1):
+    def test_build_role_schema_and_actual_dependency_attempt_binding(self):
+        with tempfile.TemporaryDirectory() as folder, \
+                patch.dict(producer.os.environ, {**self.pipeline_environment("TestSignRuntimePacks"),
+                                                 "PRODUCER_ATTEMPT": "2", "SYSTEM_JOBATTEMPT": "3"}):
+            root = Path(folder)
+            build = self.build_fixture(root / "input", build_attempt=2)
+            identity = producer.pipeline_identity(SOURCE, "TestSignRuntimePacks")
+            self.assertEqual(producer.validate_build_input(root / "input", self.recipe(), identity), build)
+            for key, value in (("stageName", None), ("stageName", "WrongStage"), ("phaseName", None),
+                               ("phaseName", "TestSignRuntimePacks"), ("jobName", "bad/name"),
+                               ("jobAttempt", None), ("jobAttempt", "2"), ("jobAttempt", True), ("jobAttempt", 1),
+                               ("unexpected", "field")):
+                changed = {**build, "pipeline": {**build["pipeline"], key: value}}
+                if value is None:
+                    del changed["pipeline"][key]
+                producer.write_json(root / "input/receipt.json", changed)
+                with self.subTest(key=key, value=value), self.assertRaises(ValueError):
+                    producer.validate_build_input(root / "input", self.recipe(), identity)
+            producer.write_json(root / "input/receipt.json", {**build, "schemaVersion": 3})
+            with self.assertRaisesRegex(ValueError, "schema-4"):
+                producer.validate_build_input(root / "input", self.recipe(), identity)
+            producer.write_json(root / "input/receipt.json", build)
+            for value in (None, "", "1", "02", "2\n", "2147483648"):
+                with self.subTest(producer_attempt=value), patch.dict(producer.os.environ):
+                    if value is None:
+                        producer.os.environ.pop("PRODUCER_ATTEMPT", None)
+                    else:
+                        producer.os.environ["PRODUCER_ATTEMPT"] = value
+                    with self.assertRaisesRegex(ValueError, "downloaded producer attempt"):
+                        producer.validate_build_input(root / "input", self.recipe(), identity)
+
+    def test_sign_preflight_rejects_wrong_download_attempt_before_commands(self):
+        with tempfile.TemporaryDirectory() as folder:
+            base = Path(folder)
+            self.build_fixture(base / "input", build_attempt=2)
+            root = base / "source"
+            root.mkdir()
+            output = base / "output"
+            with patch.dict(producer.os.environ, self.pipeline_environment("TestSignRuntimePacks")), \
+                    patch.object(producer.sys, "platform", "win32"), patch.object(producer.subprocess, "run") as external:
+                with self.assertRaisesRegex(ValueError, "downloaded producer attempt"):
+                    producer.test_sign(root, self.recipe(), base / "input", output)
+                external.assert_not_called()
+            receipt = producer.read_json(output / "receipt.json")
+            self.assertEqual(receipt["status"], "failed")
+            self.assertEqual(receipt["pipeline"]["jobName"], "__default")
+            self.assertEqual(receipt["pipeline"]["phaseName"], "TestSignRuntimePacks")
+            self.assertIn("providerContext", receipt)
+            self.assertEqual(receipt["packages"], [])
+            self.assertEqual(receipt["command_observations"], [])
+            self.assertEqual(receipt["retained_files"], [])
+            self.assertFalse(list(output.rglob("postsign.*.json")))
+
+    def test_preflight_platform_and_output_safety(self):
+        for signing in (False, True):
+            with self.subTest(signing=signing), tempfile.TemporaryDirectory() as folder:
+                base = Path(folder)
+                root = base / "source"
+                root.mkdir()
+                output = base / "output"
+                with patch.dict(producer.os.environ, self.pipeline_environment()), \
+                        patch.object(producer.sys, "platform", "linux" if signing else "win32"), \
+                        patch.object(producer.subprocess, "run") as external:
+                    with self.assertRaisesRegex(ValueError, "Windows" if signing else "Linux"):
+                        if signing:
+                            producer.test_sign(root, self.recipe(), base / "input", output)
+                        else:
+                            producer.produce(root, self.recipe(), base / "ndk", "27.2.12479018", output)
+                    original = (output / "receipt.json").read_bytes()
+                    receipt = producer.read_json(output / "receipt.json")
+                    self.assertEqual(receipt["status"], "failed")
+                    self.assertIsNone(receipt["pipeline"])
+                    self.assertIn("providerContext", receipt)
+                    with self.assertRaises(FileExistsError):
+                        if signing:
+                            producer.test_sign(root, self.recipe(), base / "input", output)
+                        else:
+                            producer.produce(root, self.recipe(), base / "ndk", "27.2.12479018", output)
+                    self.assertEqual((output / "receipt.json").read_bytes(), original)
+                    if signing:
+                        with self.assertRaisesRegex(ValueError, "disjoint"):
+                            producer.test_sign(root, self.recipe(), output, output / "nested")
+                        self.assertFalse((output / "nested").exists())
+                    external.assert_not_called()
+
+    def sign_fixture(self, folder, verification_exit=0, sign_exit=0, verifier_launch_failure=False,
+                     sign_attempt=1, build_attempt=1):
         """Exercise real ZIP/receipt orchestration with explicitly mocked external signing boundaries."""
         input_folder = folder / "input"
-        build = self.build_fixture(input_folder)
+        build = self.build_fixture(input_folder, build_attempt)
         root = folder / "source"
         root.mkdir()
         producer.write_json(root / "global.json", {"msbuild-sdks": {"Microsoft.DotNet.Arcade.Sdk": "test-only-sdk"}})
@@ -868,7 +1022,8 @@ class ProducerTests(unittest.TestCase):
             else:
                 self.fail("Unexpected command in explicit mock boundary: " + repr(command))
             return producer.subprocess.CompletedProcess(command, 0)
-        environment = {**self.pipeline_environment("TestSignRuntimePacks"), "SYSTEM_JOBATTEMPT": str(sign_attempt)}
+        environment = {**self.pipeline_environment("TestSignRuntimePacks"), "SYSTEM_JOBATTEMPT": str(sign_attempt),
+                       "PRODUCER_ATTEMPT": str(build_attempt)}
         with patch.dict(producer.os.environ, environment), \
                 patch.object(producer.sys, "platform", "win32"), \
                 patch.object(producer, "source_evidence", return_value=build["patch_sha256"]), \
@@ -884,8 +1039,15 @@ class ProducerTests(unittest.TestCase):
     def test_postsign_success_and_failed_verification_preserve_evidence(self):
         for exit_code in (0, 1):
             with self.subTest(exit_code=exit_code), tempfile.TemporaryDirectory() as folder:
-                output = self.sign_fixture(Path(folder), verification_exit=exit_code, sign_attempt=2)
+                output = self.sign_fixture(Path(folder), verification_exit=exit_code, sign_attempt=3, build_attempt=2)
                 root = producer.read_json(output / "receipt.json")
+                self.assertEqual(root["schemaVersion"], 2)
+                self.assertNotIn("providerContext", root)
+                self.assertEqual(root["pipeline"]["phaseName"], "TestSignRuntimePacks")
+                self.assertEqual(root["pipeline"]["jobName"], "__default")
+                build = producer.read_json(output / "build/receipt.json")
+                self.assertEqual(build["pipeline"]["jobAttempt"], 2)
+                self.assertEqual(build["experiment_attempt"], 1)
                 self.assertEqual(root["status"], "verified-policy-unqualified" if exit_code == 0 else "produced-verification-failed")
                 self.assertFalse(root["publication"])
                 self.assertEqual(len(root["packages"]), 2)
@@ -898,7 +1060,11 @@ class ProducerTests(unittest.TestCase):
                     self.assertEqual(post["status"], root["status"])
                     self.assertNotEqual(post["input"]["sha256"], post["output"]["sha256"])
                     self.assertEqual(post["signer"]["requestedSignType"], "Test")
-                    self.assertEqual(post["signer"]["jobAttempt"], 2)
+                    self.assertEqual(post["signer"]["jobAttempt"], 3)
+                    self.assertEqual(post["signer"]["jobName"], "__default")
+                    self.assertEqual(set(post["signer"]), {"organization", "project", "definitionId", "pipelinePath",
+                                                          "pipelineCommit", "buildId", "jobAttempt", "jobName",
+                                                          "requestedSignType", "templates"})
                     self.assertEqual(post["version"], self.recipe()["version"])
                     self.assertEqual([item["role"] for item in post["operationEvidence"]], ["sign", "sign", "verify"])
                     for ref in (post["nativeProvenance"], post["memberDelta"], post["output"]["inventory"],
@@ -924,6 +1090,8 @@ class ProducerTests(unittest.TestCase):
                 output = self.sign_fixture(Path(folder), **arguments)
                 root = producer.read_json(output / "receipt.json")
                 self.assertEqual(root["status"], "failed")
+                self.assertNotIn("providerContext", root)
+                self.assertEqual(root["pipeline"]["phaseName"], "TestSignRuntimePacks")
                 self.assertEqual(root["packages"], [])
                 self.assertEqual(len(list((output / "postsign").glob("*.nupkg"))), 1)
                 self.assertEqual(len(list((output / "build/packages").glob("*.nupkg"))), 2)
@@ -951,9 +1119,13 @@ class ProducerTests(unittest.TestCase):
                 producer.signing_properties(self.recipe(), "android-x64", value)
 
     def test_producer_refuses_nonmanual(self):
-        with patch.object(producer.sys, "platform", "linux"), patch.dict(producer.os.environ, {"BUILD_REASON": "PullRequest"}):
+        with tempfile.TemporaryDirectory() as folder, patch.object(producer.sys, "platform", "linux"), \
+                patch.dict(producer.os.environ, {"BUILD_REASON": "PullRequest"}):
             with self.assertRaisesRegex(ValueError, "manual"):
-                producer.produce(ROOT, self.recipe(), Path("missing"), "28.2.13676358")
+                producer.produce(Path(folder), self.recipe(), Path("missing"), "28.2.13676358")
+            receipt = producer.read_json(Path(folder) / "artifacts/startup-metadata-producer/receipt.json")
+            self.assertEqual(receipt["status"], "failed")
+            self.assertIsNone(receipt["pipeline"])
 
 
 if __name__ == "__main__":

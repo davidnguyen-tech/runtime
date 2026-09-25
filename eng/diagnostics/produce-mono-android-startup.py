@@ -84,7 +84,28 @@ def persist_receipt(output, receipt):
     write_json(output / "receipt.json", receipt)
 
 
-def pipeline_identity(source):
+def provider_context():
+    # Capture only these non-secret provider fields, including rejected preflight values.
+    values = {field: os.environ.get(variable) for field, variable in (
+        ("stageName", "SYSTEM_STAGENAME"), ("phaseName", "SYSTEM_PHASENAME"),
+        ("jobName", "SYSTEM_JOBNAME"), ("jobAttempt", "SYSTEM_JOBATTEMPT"),
+    )}
+    return {**{field: value[:256] if value is not None else None for field, value in values.items()},
+            "truncatedFields": [field for field, value in values.items() if value is not None and len(value) > 256]}
+
+
+def validate_pipeline_role(identity, phase):
+    require(set(identity) == {"organization", "project", "definitionId", "pipelinePath", "pipelineCommit",
+                              "buildId", "jobAttempt", "jobName", "stageName", "phaseName"},
+            "Unexpected pipeline identity fields")
+    require(identity.get("stageName") == "MonoStartupMetadata" and identity.get("phaseName") == phase,
+            "Pipeline stage/phase differs from the required " + phase + " role")
+    job = identity.get("jobName")
+    require(isinstance(job, str) and re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,255}", job),
+            "Invalid pipeline job instance identity")
+
+
+def pipeline_identity(source, phase):
     require(os.environ.get("BUILD_REASON") == "Manual", "Only a manual pipeline invocation is allowed")
     require(os.environ.get("SYSTEM_TEAMPROJECT") == "internal" and
             os.environ.get("BUILD_REPOSITORY_ID") == REPOSITORY_ID and
@@ -101,9 +122,10 @@ def pipeline_identity(source):
         require(re.fullmatch(r"[1-9][0-9]{0,9}", value) and int(value) <= 2147483647,
                 f"Invalid pipeline {variable}")
         identity[field] = int(value)
-    job = os.environ.get("SYSTEM_JOBNAME", "")
-    require(re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,255}", job), "Invalid pipeline job identity")
-    identity["jobName"] = job
+    identity.update({field: os.environ.get(variable) for field, variable in (
+        ("stageName", "SYSTEM_STAGENAME"), ("phaseName", "SYSTEM_PHASENAME"), ("jobName", "SYSTEM_JOBNAME"),
+    )})
+    validate_pipeline_role(identity, phase)
     return identity
 
 
@@ -318,17 +340,12 @@ def native_configuration(root, output, rid, marker):
 
 
 def produce(root, recipe, ndk, ndk_revision, output=None):
-    require(sys.platform == "linux", "Full producer requires the reviewed Linux container")
-    identity = pipeline_identity(recipe["source"])
-    require(recipe["container"] == PRODUCER_IMAGE, "Producer image differs from the reviewed immutable baseline")
-    require(recipe["run_id"] == f"{os.environ.get('BUILD_BUILDID')}.{os.environ.get('STARTUP_EXPERIMENT_ATTEMPT')}",
-            "Run identity does not match the common experiment attempt")
     require(not (root / "artifacts").exists(), "Producer requires a fresh checkout without build outputs")
     require(not (root / ".packages").exists(), "Producer requires a fresh isolated NuGet cache")
     output = output or root / "artifacts/startup-metadata-producer"
     output.mkdir(parents=True)
     observations = []
-    receipt = {**recipe, "schemaVersion": 3, "kind": "mono-android-startup-build-receipt", "pipeline": identity,
+    receipt = {**recipe, "schemaVersion": 4, "kind": "mono-android-startup-build-receipt", "pipeline": None,
                "status": "started", "packages": [], "package_sidecars": [], "ndk_revision": ndk_revision,
                "native_configuration": {},
                "experiment_attempt": int(recipe["run_id"].split(".")[1]),
@@ -339,8 +356,15 @@ def produce(root, recipe, ndk, ndk_revision, output=None):
     env["use_global_nuget_cache"] = "false"
     env["ANDROID_NDK_ROOT"] = str(ndk)
     env["PYTHONDONTWRITEBYTECODE"] = "1"
+    preflight = True
     # Log only explicitly selected tool output; never dump the process environment.
     try:
+        require(sys.platform == "linux", "Full producer requires the reviewed Linux container")
+        receipt["pipeline"] = pipeline_identity(recipe["source"], "BuildRuntimePacks")
+        require(recipe["container"] == PRODUCER_IMAGE, "Producer image differs from the reviewed immutable baseline")
+        require(recipe["run_id"] == f"{os.environ.get('BUILD_BUILDID')}.{os.environ.get('STARTUP_EXPERIMENT_ATTEMPT')}",
+                "Run identity does not match the common experiment attempt")
+        preflight = False
         write_json(output / "plan.json", recipe)
         receipt["patch_sha256"] = source_evidence(root, recipe, env, output, observations)
         receipt["templates"] = template_evidence(root, recipe, env, output, observations)
@@ -426,6 +450,8 @@ def produce(root, recipe, ndk, ndk_revision, output=None):
     except (OSError, ValueError, subprocess.SubprocessError, zipfile.BadZipFile, ET.ParseError) as error:
         receipt["status"] = "failed"
         receipt["failure"] = str(error)
+        if preflight:
+            receipt["providerContext"] = provider_context()
         raise
     finally:
         persist_receipt(output, receipt)
@@ -433,16 +459,20 @@ def produce(root, recipe, ndk, ndk_revision, output=None):
 
 def validate_build_input(folder, recipe, identity):
     receipt = read_json(folder / "receipt.json")
-    require(isinstance(receipt, dict) and receipt.get("schemaVersion") == 3 and
+    require(isinstance(receipt, dict) and receipt.get("schemaVersion") == 4 and
             receipt.get("kind") == "mono-android-startup-build-receipt" and
-            receipt.get("status") == "produced-unsigned-unadmitted", "Successful schema-3 normal build receipt required")
+            receipt.get("status") == "produced-unsigned-unadmitted", "Successful schema-4 normal build receipt required")
     require(all(receipt.get(key) == value for key, value in recipe.items()), "Build receipt differs from reviewed plan")
     build = receipt.get("pipeline", {})
     require(isinstance(build, dict) and all(build.get(key) == identity[key] for key in
                 ("organization", "project", "definitionId", "buildId", "pipelinePath", "pipelineCommit")) and
-            build.get("jobName") == "BuildRuntimePacks" and
             recipe["run_id"] == f"{build.get('buildId')}.{receipt.get('experiment_attempt')}",
             "Build artifact does not belong to this exact producer invocation")
+    validate_pipeline_role(build, "BuildRuntimePacks")
+    producer_attempt = os.environ.get("PRODUCER_ATTEMPT", "")
+    require(re.fullmatch(r"[1-9][0-9]{0,9}", producer_attempt) and int(producer_attempt) <= 2147483647 and
+            type(build.get("jobAttempt")) is int and build["jobAttempt"] == int(producer_attempt),
+            "Build artifact attempt differs from the downloaded producer attempt")
     retained = receipt.get("retained_files", [])
     require(isinstance(retained, list) and 0 < len(retained) <= 4096, "Invalid build evidence inventory")
     names = set()
@@ -595,12 +625,6 @@ def write_postsign(output, recipe, build_receipt, before, after, signature, sign
 
 
 def test_sign(root, recipe, input_folder, output):
-    require(sys.platform == "win32", "Normal TEST signing requires the existing Windows MicroBuild job")
-    identity = pipeline_identity(recipe["source"])
-    require(identity["jobName"] == "TestSignRuntimePacks", "Only the normal Windows TEST-sign job is allowed")
-    require(recipe["run_id"] == f"{identity['buildId']}.{os.environ.get('STARTUP_EXPERIMENT_ATTEMPT')}",
-            "Signing must preserve the common experiment identity, not its own job attempt")
-    require(recipe["container"] == PRODUCER_IMAGE, "Build image differs from the reviewed immutable baseline")
     require(not (root / "artifacts").exists() and not (root / ".packages").exists(),
             "TEST-sign job requires a fresh checkout and isolated cache")
     require(output != input_folder and input_folder not in output.parents and output not in input_folder.parents,
@@ -610,8 +634,9 @@ def test_sign(root, recipe, input_folder, output):
     evidence.mkdir()
     observations = []
     receipt = {
-        "schemaVersion": 1, "kind": "mono-android-startup-sign-receipt", "status": "started",
-        "source": recipe["source"], "pipeline": identity, "publication": False, "guest_execution": False,
+        "schemaVersion": 2, "kind": "mono-android-startup-sign-receipt", "status": "started",
+        "source": recipe["source"], "pipeline": None,
+        "publication": False, "guest_execution": False,
         "evidenceDirectories": {"build": "build", "presign": "build/packages", "postsign": "postsign"},
         "commandLogDirectory": "postsign", "command_observations": observations, "packages": [],
         "capture_limits": ["No inner signer/repack process exit or task version is inferred from the outer command.",
@@ -620,13 +645,24 @@ def test_sign(root, recipe, input_folder, output):
     }
     env = dict(os.environ, NUGET_PACKAGES=str(root / ".packages"), use_global_nuget_cache="false",
                PYTHONDONTWRITEBYTECODE="1")
+    preflight = True
     try:
+        require(sys.platform == "win32", "Normal TEST signing requires the existing Windows MicroBuild job")
+        identity = pipeline_identity(recipe["source"], "TestSignRuntimePacks")
+        receipt["pipeline"] = identity
+        require(recipe["run_id"] == f"{identity['buildId']}.{os.environ.get('STARTUP_EXPERIMENT_ATTEMPT')}",
+                "Signing must preserve the common experiment identity, not its own job attempt")
+        require(recipe["container"] == PRODUCER_IMAGE, "Build image differs from the reviewed immutable baseline")
         build = validate_build_input(input_folder, recipe, identity)
+        preflight = False
         require(source_evidence(root, recipe, env, evidence, observations) == build["patch_sha256"],
                 "Signing source patch differs from the build source")
         templates = template_evidence(root, recipe, env, evidence, observations)
         require(templates == build.get("templates"), "Signing templates differ from the original build")
-        signer = {**identity, "requestedSignType": "Test", "templates": templates}
+        # The shared signer schema retains raw job identity, not the source-specific phase fields.
+        signer = {key: identity[key] for key in ("organization", "project", "definitionId", "pipelinePath",
+                                                "pipelineCommit", "buildId", "jobAttempt", "jobName")}
+        signer.update(requestedSignType="Test", templates=templates)
         receipt["signer"] = signer
         shutil.copytree(input_folder, output / "build")
         shutil.copyfile(input_folder / "receipt.json", evidence / "build-receipt.json")
@@ -703,6 +739,8 @@ def test_sign(root, recipe, input_folder, output):
         if receipt["status"] != "produced-verification-failed":
             receipt["status"] = "failed"
         receipt["failure"] = str(error)
+        if preflight:
+            receipt["providerContext"] = provider_context()
         raise
     finally:
         persist_receipt(output, receipt)
@@ -726,7 +764,7 @@ def main():
     recipe = plan(args.source, args.run_id, args.container, args.enable)
     require(not (args.test_sign and args.plan_only), "TEST signing is not a plan-only operation")
     if args.validate_pipeline:
-        pipeline_identity(recipe["source"])
+        pipeline_identity(recipe["source"], "ValidateInputs")
         require(recipe["container"] == PRODUCER_IMAGE, "Pipeline image differs from the reviewed baseline")
         require(recipe["run_id"] == f"{os.environ.get('BUILD_BUILDID')}.{os.environ.get('STARTUP_EXPERIMENT_ATTEMPT')}",
                 "Run identity does not match the common experiment attempt")

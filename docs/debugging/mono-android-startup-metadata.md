@@ -255,8 +255,8 @@ The latter preserves `build/` byte-for-byte, unsigned packages in
 `build/packages/`, and signed outputs/evidence in `postsign/`. The post-sign
 build-receipt alias is an identical copy, not a rewrite of its relative refs.
 
-The source-specific build root is schema **3**,
-`mono-android-startup-build-receipt`; the signing root is schema **1**,
+The source-specific build root is schema **4**,
+`mono-android-startup-build-receipt`; the signing root is schema **2**,
 `mono-android-startup-sign-receipt`. Both retain actual command observations,
 including failure/launch failure. The latter also records evidence-directory
 roles, real per-RID signing binlogs, evaluated signing selection, and the
@@ -269,6 +269,50 @@ member hash, ELF class/endianness/machine, exact NUL-terminated marker, and raw
 per-RID CMake cache/compiler-identification copies. GNU build IDs are explicitly
 `null` / `not-collected`, not claimed absent. Member deltas are complete
 observations requiring independent policy review, not an allow-all signing rule.
+
+The source-specific `pipeline` object has exactly ten fields: `organization`,
+`project`, `definitionId`, `pipelinePath`, `pipelineCommit`, `buildId`,
+`jobAttempt`, `jobName`, `stageName`, and `phaseName`. The last three preserve
+the actual `System.JobName`, `System.StageName`, and `System.PhaseName` strings;
+the build ID and job attempt remain positive integers. The
+[Azure predefined-variable documentation](https://learn.microsoft.com/en-us/azure/devops/pipelines/build/variables?view=azure-devops#system-variables)
+distinguishes the logical phase from its runtime job instance. Actual run
+3087046 recorded raw `jobName=__default`; its timeline identifies logical
+`MonoStartupMetadata.BuildRuntimePacks` and
+`MonoStartupMetadata.TestSignRuntimePacks` phases, with `.__default` job
+instances. A declared YAML job name is therefore not the raw job-instance name.
+
+Role validation requires stage `MonoStartupMetadata` and phase
+`BuildRuntimePacks` or `TestSignRuntimePacks` for the respective operation;
+the plan-only pipeline gate requires phase `ValidateInputs`. A syntactically
+valid job-instance name alone never grants a role. Existing manual invocation,
+definition 679, repository, source, and feature-branch checks remain required.
+Signing additionally compares the downloaded build's actual `jobAttempt` with
+the existing dependency-supplied `PRODUCER_ATTEMPT`. This producer-only check
+does not add a consumer or shared-signer field. Common `experiment_attempt`
+continues to bind `run_id`, package version, and marker; it is independent of
+both job attempts. For example, common attempt 1, build attempt 2, and signing
+attempt 3 are valid when the selected build dependency attempt is 2.
+
+The shared signer's closed ten-field shape remains unchanged: only the original
+eight pipeline identity fields, `requestedSignType`, and `templates` are emitted.
+Stage/phase fields stay in the source-specific roots, and raw `jobName` is never
+relabeled. Consumers must explicitly require build schema 4/sign schema 2,
+validate their exact stage/phase roles, and compare only the original eight
+identity fields with the shared signer. Historical schema 3/1 receipts, including
+3087046, remain unchanged and are not retrospectively phase-qualified.
+
+After fresh-output and input/output-disjointness checks establish a safe
+destination, failed preflight retains a `failed` root with no package or common
+post-sign receipt. `pipeline` is `null` if identity validation did not complete;
+a genuinely validated identity can remain when a later gate fails.
+Preflight failures alone add `providerContext`, containing exactly `stageName`,
+`phaseName`, `jobName`, `jobAttempt`, and `truncatedFields`. The first four are
+raw environment strings or `null` when missing, limited to 256 characters;
+`truncatedFields` explicitly lists any retained prefixes. This context is not
+authority, and validation always uses the original, untruncated values.
+Successful roots and later command-failure roots do not add this context.
+Unsafe or already-existing destinations are rejected without overwriting them.
 
 Standard final `dotnet nuget verify --all` success is
 `verified-policy-unqualified`, **not admission or clean-consumer trust**.
