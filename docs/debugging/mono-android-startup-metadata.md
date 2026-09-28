@@ -471,3 +471,61 @@ Actual Intel Mac SDK trust, package timestamp policy, consumer readiness and
 guest behavior remain unverified. Do not treat this Windows verification or
 the separate SDL result as admission; do not install or execute these packs
 on a guest without an independent review.
+
+### Separate held Intel Mac signature check (default off)
+
+The root parameter `verifyMonoStartupRealSignature=false` leaves the ordinary
+graph and the existing Test/Real producer path unchanged. Explicitly enabling
+it **without** `enableMonoStartupMetadata` selects only
+`MonoStartupMacVerification.VerifyHeldRealSignatures`, under the same manual
+internal definition 679 and inherited 1ES SDL policy. Supply
+`monoStartupSourceCommit` with the exact separately reviewed verifier-route
+commit; the job rejects any mismatch against `Build.SourceVersion`. Enabling
+both diagnostic modes instead produces a failing, checkout-free guard stage. The verifier uses
+the existing official `Azure Pipelines` / `macos-latest-internal` Mac pool
+mapping; the script requires actual Darwin x86_64 hardware, rejects Rosetta,
+and refuses nonmanual, non-internal or production-branch contexts. This
+route does not rebuild, re-sign, consume an UPack/feed, or request credentials,
+service-connection grants, publishing or promotion.
+
+The job's `DownloadPipelineArtifact@2` selects **specific build 3089937** in
+the same `internal` project, definition 679, artifact
+`mono-android-startup-real-signed-unadmitted-1` (ID 76626017). Before any SDK
+acquisition, the verifier requires the exact schema-3 signing receipt SHA-256
+`774be14d603180cdec10abbde330ac81f12b13afbeb508784caf2d2bdea8a401`,
+validates every listed file against that receipt, rejects any unlisted files
+or links and requires exactly the two signed `postsign/` packages (not the
+unsigned copies in `build/packages/`). It checks each signed package hash
+and size above, original unsigned package hashes, definition 679,
+source/build/run identities,
+post-sign bindings, complete signed member inventories and Windows
+verification sidecars. An unexpected download layout or package fails closed.
+An exact `pipelineId` downloads by run ID rather than searching by build-result
+filter: the separate inherited SDL TSA task left the source run partially
+succeeded. There is no latest-run or failed-build search; the successful
+Real-sign job and the pinned receipt, packages and input/output bindings remain
+independent requirements.
+
+On an eligible host it downloads the official **osx-x64 SDK 10.0.401** archive
+from its immutable version URL and requires SHA-512
+`33401b4a2da8554e3306db6072ea8569d9fcc608509c271e0aa4b39e7cc432da3631f14e7e1e2445d67d72550d18ce44a8bbd2382a756867ad2edab6b1c963c0`
+before extraction into agent-temporary storage. The actual SDK executable
+must report `10.0.401`. The archive refuses links, special entries and
+unsafe/duplicate paths; SDK extraction, CLI home and NuGet packages remain
+under temporary storage. Before SDK first use the verifier suppresses only
+process-local ASP.NET certificate generation, rejects inherited signature
+verification disablement or offline revocation and records inherited verifier
+settings without overriding them. It hashes the SDK executable and both
+trusted-root bundles before and after verification, failing on drift. For each
+signed package, it runs ordinary
+`dotnet nuget verify --all --certificate-fingerprint
+9A1B131BEE0605433056A4EA3815478A8E177961A968C6C0027C1093D1FEB630`
+in the package directory, retaining each child exit code and hashed combined
+output even on failure. Each child has a 120-second timeout and an 8 MiB
+output cap; timeouts and excess output fail closed with retained evidence.
+A nonzero verifier result fails the job after both
+RIDs have been checked. Only a small nonproduction pipeline artifact with
+logs and a root receipt is emitted; the SDK and packs are not republished.
+Success means observed Mac SDK verification only, **not** policy admission,
+guest readiness, installation or use. This route is proposed for review and
+provider preview; no Mac verification run is implied here.

@@ -30,8 +30,12 @@ parameters:
   displayName: Use approved Real signing instead of Test signing (manual diagnostic only)
   type: boolean
   default: false
+- name: verifyMonoStartupRealSignature
+  displayName: Verify held Real-signed startup packs on Intel Mac without publishing
+  type: boolean
+  default: false
 - name: monoStartupSourceCommit
-  displayName: Exact reviewed diagnostic feature commit (required when enabled)
+  displayName: Exact reviewed diagnostic feature commit (required for either diagnostic mode)
   type: string
   default: ''
 - name: monoStartupAttempt
@@ -51,15 +55,30 @@ extends:
   template:  /eng/pipelines/common/templates/pipeline-with-resources.yml
   parameters:
     isOfficialBuild: true
-    enableMonoStartupMetadata: ${{ parameters.enableMonoStartupMetadata }}
+    enableMonoStartupMetadata: ${{ or(parameters.enableMonoStartupMetadata, parameters.verifyMonoStartupRealSignature) }}
     stages:
-    - ${{ if eq(parameters.enableMonoStartupMetadata, true) }}:
+    - ${{ if and(eq(parameters.verifyMonoStartupRealSignature, true), eq(parameters.enableMonoStartupMetadata, false)) }}:
+      - template: /eng/pipelines/mono-android-startup-mac-verify.yml
+        parameters:
+          sourceCommit: ${{ parameters.monoStartupSourceCommit }}
+    - ${{ if and(eq(parameters.enableMonoStartupMetadata, true), eq(parameters.verifyMonoStartupRealSignature, false)) }}:
       - template: /eng/pipelines/mono-android-startup-metadata.yml
         parameters:
           sourceCommit: ${{ parameters.monoStartupSourceCommit }}
           attempt: ${{ parameters.monoStartupAttempt }}
           realSign: ${{ parameters.monoStartupRealSign }}
-    - ${{ if eq(parameters.enableMonoStartupMetadata, false) }}:
+    - ${{ if and(eq(parameters.enableMonoStartupMetadata, true), eq(parameters.verifyMonoStartupRealSignature, true)) }}:
+      - stage: InvalidMonoStartupMode
+        dependsOn: []
+        jobs:
+        - job: RejectCombinedDiagnostics
+          pool:
+            vmImage: ubuntu-latest
+          steps:
+          - checkout: none
+          - bash: exit 1
+            displayName: Build/sign and held Mac verification cannot run together
+    - ${{ if and(eq(parameters.enableMonoStartupMetadata, false), eq(parameters.verifyMonoStartupRealSignature, false)) }}:
       - ${{ if eq(variables['Build.SourceBranch'], 'refs/heads/main') }}:
         - stage: Localization
           dependsOn: []

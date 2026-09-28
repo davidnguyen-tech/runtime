@@ -1,0 +1,55 @@
+parameters:
+- name: sourceCommit
+  type: string
+
+stages:
+- stage: MonoStartupMacVerification
+  displayName: Held Real-signed Mono Android pack verification only
+  dependsOn: []
+  condition: and(succeeded(), eq(variables['Build.Reason'], 'Manual'))
+  jobs:
+  - template: /eng/common/templates-official/job/job.yml
+    parameters:
+      name: VerifyHeldRealSignatures
+      displayName: Verify exact held packages on Intel Mac
+      timeoutInMinutes: 90
+      pool:
+        name: Azure Pipelines
+        vmImage: macos-latest-internal
+        os: macOS
+      enablePublishing: false
+      enablePublishBuildAssets: false
+      preSteps:
+      - checkout: self
+        path: s
+        clean: true
+        fetchDepth: 1
+        persistCredentials: false
+      templateContext:
+        outputs:
+        - output: pipelineArtifact
+          targetPath: $(Build.ArtifactStagingDirectory)/mono-startup-mac-verification
+          artifactName: mono-android-startup-mac-verification-unadmitted-$(System.JobAttempt)
+          condition: succeededOrFailed()
+          isProduction: false
+      steps:
+      - task: DownloadPipelineArtifact@2
+        displayName: Download exact existing Real-signed artifact from definition 679
+        inputs:
+          buildType: specific
+          project: internal
+          definition: '679'
+          buildVersionToDownload: specific
+          pipelineId: '3089937'
+          artifactName: mono-android-startup-real-signed-unadmitted-1
+          targetPath: $(Pipeline.Workspace)/mono-startup-held-real-input
+      - bash: |
+          set -euo pipefail
+          python3 eng/diagnostics/verify-mono-android-startup-mac.py \
+            --input "$HELD_INPUT" --output "$VERIFY_OUTPUT" --source "$REVIEWED_SOURCE"
+        displayName: Verify exact signed pack bytes with official osx-x64 SDK
+        workingDirectory: $(Pipeline.Workspace)/s
+        env:
+          HELD_INPUT: $(Pipeline.Workspace)/mono-startup-held-real-input
+          VERIFY_OUTPUT: $(Build.ArtifactStagingDirectory)/mono-startup-mac-verification
+          REVIEWED_SOURCE: ${{ parameters.sourceCommit }}

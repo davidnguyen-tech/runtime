@@ -5,9 +5,12 @@ import importlib.util
 import io
 import json
 from pathlib import Path
+import runpy
+import sys
+import tarfile
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 import xml.etree.ElementTree as ET
 import zipfile
 
@@ -18,9 +21,281 @@ producer = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(producer)
 SOURCE = "a" * 40
 IMAGE = producer.PRODUCER_IMAGE
+MAC_VERIFIER = runpy.run_path(str(SCRIPT.with_name("verify-mono-android-startup-mac.py")))
 
 
 class ProducerTests(unittest.TestCase):
+    def test_held_mac_verification_is_isolated_and_default_off(self):
+        root = (ROOT / producer.PIPELINE_PATH).read_text()
+        template = (ROOT / "eng/pipelines/mono-android-startup-mac-verify.yml").read_text()
+        self.assertIn("name: verifyMonoStartupRealSignature\n", root)
+        self.assertIn("  default: false\n", root.split("name: verifyMonoStartupRealSignature", 1)[1].split("variables:", 1)[0])
+        self.assertIn("sourceCommit: ${{ parameters.monoStartupSourceCommit }}", root)
+        self.assertIn("and(eq(parameters.verifyMonoStartupRealSignature, true), eq(parameters.enableMonoStartupMetadata, false))", root)
+        self.assertIn("and(eq(parameters.enableMonoStartupMetadata, false), eq(parameters.verifyMonoStartupRealSignature, false))", root)
+        for expected in ("condition: and(succeeded(), eq(variables['Build.Reason'], 'Manual'))",
+                         "name: Azure Pipelines", "vmImage: macos-latest-internal", "name: VerifyHeldRealSignatures",
+                         "buildType: specific", "project: internal", "definition: '679'",
+                         "buildVersionToDownload: specific", "pipelineId: '3089937'",
+                         "artifactName: mono-android-startup-real-signed-unadmitted-1",
+                         "isProduction: false", "condition: succeededOrFailed()",
+                         "enablePublishing: false", "enablePublishBuildAssets: false",
+                         "persistCredentials: false", "REVIEWED_SOURCE: ${{ parameters.sourceCommit }}"):
+            self.assertIn(expected, template)
+        self.assertNotIn("publish-build-assets.yml", template)
+        self.assertNotIn("allowFailedBuilds", template)
+        self.assertNotIn("allowPartiallySucceededBuilds", template)
+        self.assertNotIn("MicroBuild", template)
+        self.assertNotIn("feed", template.lower())
+        self.assertNotIn("darc", template.lower())
+        self.assertEqual(MAC_VERIFIER["SDK_SHA512"],
+                         "33401b4a2da8554e3306db6072ea8569d9fcc608509c271e0aa4b39e7cc432da3631f14e7e1e2445d67d72550d18ce44a8bbd2382a756867ad2edab6b1c963c0")
+        self.assertEqual(MAC_VERIFIER["ARTIFACT_ID"], 76626017)
+        self.assertEqual(set(MAC_VERIFIER["PACKAGES"]), set(producer.RID_ARCH))
+
+    def test_held_mac_verifier_refuses_unreviewed_context_and_preserves_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with patch.dict(producer.os.environ, {"BUILD_REASON": "PullRequest"}), \
+                    patch.object(MAC_VERIFIER["subprocess"], "run") as external:
+                with self.assertRaisesRegex(ValueError, "Only reviewed internal manual"):
+                    MAC_VERIFIER["verify"](root / "missing", root / "evidence", "b" * 40)
+                external.assert_not_called()
+            receipt = producer.read_json(root / "evidence/receipt.json")
+            self.assertEqual(receipt["status"], "failed")
+            self.assertFalse(receipt["admitted"])
+            self.assertFalse(receipt["guestExecution"])
+            self.assertEqual(receipt["packages"], [])
+            self.assertEqual(receipt["observations"], [])
+            self.assertEqual(receipt["retainedFiles"], [])
+            with patch.dict(producer.os.environ, {
+                    "BUILD_REASON": "Manual", "SYSTEM_TEAMPROJECT": "internal",
+                    "SYSTEM_DEFINITIONID": "679", "BUILD_SOURCEVERSION": "c" * 40}), \
+                    patch.object(MAC_VERIFIER["subprocess"], "run") as external:
+                with self.assertRaisesRegex(ValueError, "Only reviewed internal manual"):
+                    MAC_VERIFIER["verify"](root / "missing", root / "mismatched-source", "b" * 40)
+                external.assert_not_called()
+            self.assertEqual(producer.read_json(root / "mismatched-source/receipt.json")["status"], "failed")
+
+    def test_held_mac_host_rejects_rosetta_and_non_intel(self):
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            observations = []
+            with patch.object(MAC_VERIFIER["sys"], "platform", "darwin"), \
+                    patch.object(MAC_VERIFIER["platform"], "machine", return_value="arm64"), \
+                    patch.object(MAC_VERIFIER["subprocess"], "run") as external:
+                with self.assertRaisesRegex(ValueError, "Native Darwin x86_64"):
+                    MAC_VERIFIER["mac_host"](folder, observations)
+                external.assert_not_called()
+            with patch.object(MAC_VERIFIER["sys"], "platform", "darwin"), \
+                    patch.object(MAC_VERIFIER["platform"], "machine", return_value="x86_64"), \
+                    patch.object(MAC_VERIFIER["subprocess"], "run", side_effect=[
+                        producer.subprocess.CompletedProcess([], 0, b"1\n")]):
+                with self.assertRaisesRegex(ValueError, "Rosetta"):
+                    MAC_VERIFIER["mac_host"](folder, observations)
+            self.assertEqual(observations[0]["exitCode"], 0)
+            self.assertEqual(observations[0]["log"]["sha256"], producer.sha256(folder / "hw.optional.arm64.log"))
+
+    def test_held_mac_sdk_hash_rejected_before_extraction(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = root / "workspace"
+            output = root / "evidence"
+            workspace.mkdir()
+            output.mkdir()
+            with patch.object(MAC_VERIFIER["urllib"].request, "urlopen", return_value=io.BytesIO(b"not SDK")), \
+                    patch.dict(MAC_VERIFIER["sdk_install"].__globals__,
+                               {"extract_sdk_archive": Mock()}) as globals_:
+                with self.assertRaisesRegex(ValueError, "SHA-512 mismatch"):
+                    MAC_VERIFIER["sdk_install"](workspace, output, [])
+                globals_["extract_sdk_archive"].assert_not_called()
+
+    def test_held_mac_signing_receipt_rejects_other_definition(self):
+        receipt = {"schemaVersion": 3, "kind": "mono-android-startup-sign-receipt",
+                   "status": "verified-policy-unqualified", "source": MAC_VERIFIER["SOURCE"],
+                   "publication": False, "guest_execution": False,
+                   "pipeline": {"buildId": MAC_VERIFIER["RUN"], "definitionId": 680,
+                                "phaseName": "RealSignRuntimePacks",
+                                "pipelineCommit": MAC_VERIFIER["SOURCE"]},
+                   "signer": {"requestedSignType": "Real"}}
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            (folder / "receipt.json").write_text("{}")
+            with patch.dict(MAC_VERIFIER["validate_input"].__globals__,
+                            {"read_json": lambda _: receipt,
+                             "sha256": lambda _: MAC_VERIFIER["RECEIPT_SHA256"]}):
+                with self.assertRaisesRegex(ValueError, "provenance mismatch"):
+                    MAC_VERIFIER["validate_input"](folder)
+
+    def test_held_mac_command_failure_records_actual_exit_and_log(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            observations = []
+            with self.assertRaisesRegex(ValueError, "failed"):
+                MAC_VERIFIER["run"]([sys.executable, "-c", "print('synthetic verifier failure'); raise SystemExit(7)"],
+                                    output, output, "verify.x64", observations)
+            self.assertEqual(observations[0]["exitCode"], 7)
+            self.assertEqual(observations[0]["log"]["sha256"], producer.sha256(output / "verify.x64.log"))
+
+    def test_held_mac_command_timeout_and_output_limit_are_retained(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            observations = []
+            with self.assertRaisesRegex(ValueError, "timed out"):
+                MAC_VERIFIER["run"]([sys.executable, "-c",
+                                     "import time; print('started', flush=True); time.sleep(10)"],
+                                    output, output, "timeout", observations, timeout_seconds=0.2)
+            self.assertTrue(observations[0]["timedOut"])
+            self.assertIsInstance(observations[0]["exitCode"], int)
+            self.assertEqual(observations[0]["log"]["sha256"], producer.sha256(output / "timeout.log"))
+            with self.assertRaisesRegex(ValueError, "output limit"):
+                MAC_VERIFIER["run"]([sys.executable, "-c", "import sys; sys.stdout.write('x'*8192)"],
+                                    output, output, "overflow", observations, max_log_bytes=1024)
+            self.assertTrue(observations[1]["logLimitExceeded"])
+            self.assertEqual((output / "overflow.log").stat().st_size, 1024)
+            self.assertEqual(observations[1]["log"]["sha256"], producer.sha256(output / "overflow.log"))
+
+    def test_held_mac_sdk_archive_refuses_unsafe_paths_and_links(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            archive = root / "sdk.tar.gz"
+            for name, kind in (("../escape", "file"), ("/absolute", "file"),
+                               ("sdk/link", "link"), ("sdk/device", "special")):
+                with self.subTest(name=name):
+                    with tarfile.open(archive, "w:gz") as target:
+                        entry = tarfile.TarInfo(name)
+                        if kind == "file":
+                            entry.size = 1
+                            target.addfile(entry, io.BytesIO(b"x"))
+                        elif kind == "link":
+                            entry.type = tarfile.SYMTYPE
+                            entry.linkname = "../escape"
+                            target.addfile(entry)
+                        else:
+                            entry.type = tarfile.CHRTYPE
+                            target.addfile(entry)
+                    destination = root / "sdk"
+                    destination.mkdir(exist_ok=True)
+                    with self.assertRaisesRegex(ValueError, "Unsafe SDK archive path|link or special"):
+                        MAC_VERIFIER["extract_sdk_archive"](archive, destination)
+                    self.assertEqual(list(destination.iterdir()), [])
+
+    def test_held_mac_trust_snapshot_tracks_executable_and_roots(self):
+        with tempfile.TemporaryDirectory() as directory:
+            sdk = Path(directory)
+            binary = sdk / "dotnet"
+            binary.write_bytes(b"SDK executable")
+            roots = sdk / "sdk/10.0.401/trustedroots"
+            roots.mkdir(parents=True)
+            for name in ("codesignctl.pem", "timestampctl.pem"):
+                (roots / name).write_bytes(name.encode())
+            before = MAC_VERIFIER["sdk_trust_snapshot"](binary)
+            self.assertEqual(len(before), 3)
+            (roots / "codesignctl.pem").write_bytes(b"modified")
+            self.assertNotEqual(before, MAC_VERIFIER["sdk_trust_snapshot"](binary))
+
+    def test_held_mac_rejects_inherited_signature_and_revocation_bypasses(self):
+        context = {"BUILD_REASON": "Manual", "SYSTEM_TEAMPROJECT": "internal",
+                   "SYSTEM_DEFINITIONID": "679", "BUILD_REPOSITORY_ID": producer.REPOSITORY_ID,
+                   "SYSTEM_STAGENAME": "MonoStartupMacVerification",
+                   "SYSTEM_PHASENAME": "VerifyHeldRealSignatures",
+                   "BUILD_SOURCEVERSION": "b" * 40, "BUILD_SOURCEBRANCH": "refs/heads/reviewed-feature"}
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for index, settings in enumerate(({"DOTNET_NUGET_SIGNATURE_VERIFICATION": "false"},
+                                               {"NUGET_CERT_REVOCATION_MODE": "offline"})):
+                with self.subTest(settings=settings), patch.dict(producer.os.environ, context | settings, clear=True), \
+                        patch.dict(MAC_VERIFIER["verify"].__globals__,
+                                   {"validate_input": lambda _: self.fail("Must reject before artifact inspection")}):
+                    output = root / str(index)
+                    with self.assertRaisesRegex(ValueError, "Inherited NuGet"):
+                        MAC_VERIFIER["verify"](root / "input", output, "b" * 40)
+                    receipt = producer.read_json(output / "receipt.json")
+                    self.assertEqual(receipt["status"], "failed")
+                    for name, value in settings.items():
+                        self.assertEqual(receipt["inheritedVerifierSettings"][name], value)
+
+    def test_held_mac_rejects_sdk_trust_change_after_verification(self):
+        context = {"BUILD_REASON": "Manual", "SYSTEM_TEAMPROJECT": "internal",
+                   "SYSTEM_DEFINITIONID": "679", "BUILD_REPOSITORY_ID": producer.REPOSITORY_ID,
+                   "SYSTEM_STAGENAME": "MonoStartupMacVerification",
+                   "SYSTEM_PHASENAME": "VerifyHeldRealSignatures",
+                   "BUILD_SOURCEVERSION": "b" * 40, "BUILD_SOURCEBRANCH": "refs/heads/reviewed-feature"}
+        package = {"rid": "android-x64", "package": {"fileName": "android-x64.nupkg"}}
+        def install(workspace, *_):
+            sdk = workspace / "sdk"
+            roots = sdk / "sdk/10.0.401/trustedroots"
+            roots.mkdir(parents=True)
+            (sdk / "dotnet").write_bytes(b"SDK executable")
+            for name in ("codesignctl.pem", "timestampctl.pem"):
+                (roots / name).write_bytes(name.encode())
+            return sdk / "dotnet"
+        def execute(command, _, output, name, observations, env):
+            log = output / (name + ".log")
+            log.write_bytes(b"10.0.401\n" if command[-1] == "--version" else b"verified\n")
+            observations.append({"name": name, "exitCode": 0, "log": MAC_VERIFIER["reference"](log)})
+            if command[-1] != "--version":
+                (Path(env["DOTNET_ROOT"]) / "sdk/10.0.401/trustedroots/codesignctl.pem").write_bytes(b"changed")
+            return log
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "input").mkdir()
+            with patch.dict(producer.os.environ, context, clear=True), \
+                    patch.dict(MAC_VERIFIER["verify"].__globals__,
+                               {"validate_input": lambda _: [package], "mac_host": lambda *_: None,
+                                "sdk_install": install, "run": execute}):
+                with self.assertRaisesRegex(ValueError, "trust roots changed"):
+                    MAC_VERIFIER["verify"](root / "input", root / "output", "b" * 40)
+            receipt = producer.read_json(root / "output/receipt.json")
+            self.assertEqual(receipt["status"], "failed")
+            self.assertNotEqual(receipt["sdkTrust"]["before"], receipt["sdkTrust"]["after"])
+
+    def test_held_mac_checks_both_packages_even_when_first_verifier_fails(self):
+        context = {"BUILD_REASON": "Manual", "SYSTEM_TEAMPROJECT": "internal",
+                   "SYSTEM_DEFINITIONID": "679", "BUILD_REPOSITORY_ID": producer.REPOSITORY_ID,
+                   "SYSTEM_STAGENAME": "MonoStartupMacVerification",
+                   "SYSTEM_PHASENAME": "VerifyHeldRealSignatures",
+                   "BUILD_SOURCEVERSION": "b" * 40,
+                   "BUILD_SOURCEBRANCH": "refs/heads/reviewed-feature"}
+        packages = [{"rid": rid, "package": {"fileName": rid + ".nupkg"}}
+                    for rid in MAC_VERIFIER["PACKAGES"]]
+        def execute(command, _, output, name, observations, env):
+            self.assertEqual(env["DOTNET_GENERATE_ASPNET_CERTIFICATE"], "false")
+            self.assertTrue(Path(env["DOTNET_CLI_HOME"]).is_dir())
+            self.assertTrue(Path(env["NUGET_PACKAGES"]).is_dir())
+            log = output / (name + ".log")
+            if command[-1] == "--version":
+                log.write_bytes(b"10.0.401\n")
+                exit_code = 0
+            else:
+                log.write_bytes(b"NuGet verification result\n")
+                exit_code = 7 if command[-1] == "android-x64.nupkg" else 0
+            observations.append({"name": name, "exitCode": exit_code, "log": MAC_VERIFIER["reference"](log)})
+            if exit_code:
+                raise ValueError("verifier failed")
+            return log
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "input").mkdir()
+            with patch.dict(producer.os.environ, context, clear=True), \
+                    patch.dict(MAC_VERIFIER["verify"].__globals__,
+                               {"validate_input": lambda _: packages,
+                                "mac_host": lambda *_: None,
+                                "sdk_install": lambda *_: Path("/sdk/dotnet"),
+                                "sdk_trust_snapshot": lambda _: [{"sha256": "unchanged"}],
+                                "run": execute}):
+                with self.assertRaisesRegex(ValueError, "Intel Mac normal verifier rejected"):
+                    MAC_VERIFIER["verify"](root / "input", root / "output", "b" * 40)
+            receipt = producer.read_json(root / "output/receipt.json")
+            self.assertEqual(receipt["status"], "failed")
+            self.assertEqual(receipt["verifierSourceCommit"], "b" * 40)
+            self.assertEqual([entry["verificationExitCode"] for entry in receipt["packages"]], [7, 0])
+            verify_logs = [entry for entry in receipt["observations"] if entry["name"].startswith("verify.")]
+            self.assertEqual([entry["exitCode"] for entry in verify_logs], [7, 0])
+            for entry in verify_logs:
+                self.assertEqual(entry["log"]["sha256"], producer.sha256(root / "output" / entry["log"]["fileName"]))
+            self.assertEqual(len(receipt["retainedFiles"]), 4)
+
     def recipe(self, **overrides):
         args = {"source": SOURCE, "run_id": "123.1", "image": IMAGE, "enabled": True}
         args.update(overrides)
@@ -81,12 +356,17 @@ class ProducerTests(unittest.TestCase):
                           "  displayName: Use approved Real signing instead of Test signing (manual diagnostic only)\n"
                           "  type: boolean\n"
                           "  default: false\n")
+        verify_parameter = ("- name: verifyMonoStartupRealSignature\n"
+                            "  displayName: Verify held Real-signed startup packs on Intel Mac without publishing\n"
+                            "  type: boolean\n"
+                            "  default: false\n")
         self.assertEqual(current.count(real_parameter), 1)
-        current_default = current.replace(real_parameter, "").replace(
+        self.assertEqual(current.count(verify_parameter), 1)
+        current_default = current.replace(real_parameter, "").replace(verify_parameter, "").replace(
             "Build and sign artifact-only Mono Android startup diagnostics",
             "Build and TEST-sign artifact-only Mono Android startup diagnostics")
         self.assertTrue(current_default.startswith(original.split("variables:\n")[0]))
-        image_flag = "    enableMonoStartupMetadata: ${{ parameters.enableMonoStartupMetadata }}\n"
+        image_flag = "    enableMonoStartupMetadata: ${{ or(parameters.enableMonoStartupMetadata, parameters.verifyMonoStartupRealSignature) }}\n"
         self.assertEqual(current.count(image_flag), 1)
         self.assertEqual(current_default.replace(image_flag, "").split("variables:\n", 1)[1].split("    stages:\n", 1)[0],
                          original.split("variables:\n", 1)[1].split("    stages:\n", 1)[0])
@@ -94,14 +374,25 @@ class ProducerTests(unittest.TestCase):
         self.assertIn("  type: boolean\n  default: false\n", current)
         self.assertIn("          realSign: ${{ parameters.monoStartupRealSign }}\n", current)
         enabled, disabled = current.split("    stages:\n", 1)[1].split(
-            "    - ${{ if eq(parameters.enableMonoStartupMetadata, false) }}:\n")
+            "    - ${{ if and(eq(parameters.enableMonoStartupMetadata, false), eq(parameters.verifyMonoStartupRealSignature, false)) }}:\n")
+        verify_branch, enabled = enabled.split(
+            "    - ${{ if and(eq(parameters.enableMonoStartupMetadata, true), eq(parameters.verifyMonoStartupRealSignature, false)) }}:\n")
+        self.assertEqual(verify_branch,
+                         "    - ${{ if and(eq(parameters.verifyMonoStartupRealSignature, true), eq(parameters.enableMonoStartupMetadata, false)) }}:\n"
+                         "      - template: /eng/pipelines/mono-android-startup-mac-verify.yml\n"
+                         "        parameters:\n"
+                         "          sourceCommit: ${{ parameters.monoStartupSourceCommit }}\n")
+        enabled, reject = enabled.split(
+            "    - ${{ if and(eq(parameters.enableMonoStartupMetadata, true), eq(parameters.verifyMonoStartupRealSignature, true)) }}:\n")
         self.assertEqual(enabled,
-                         "    - ${{ if eq(parameters.enableMonoStartupMetadata, true) }}:\n"
                          "      - template: /eng/pipelines/mono-android-startup-metadata.yml\n"
                          "        parameters:\n"
                          "          sourceCommit: ${{ parameters.monoStartupSourceCommit }}\n"
                          "          attempt: ${{ parameters.monoStartupAttempt }}\n"
                          "          realSign: ${{ parameters.monoStartupRealSign }}\n")
+        self.assertIn("stage: InvalidMonoStartupMode", reject)
+        self.assertIn("checkout: none", reject)
+        self.assertIn("- bash: exit 1", reject)
         default_stages = "\n".join(line[2:] if line else "" for line in disabled.splitlines())
         self.assertEqual(default_stages, original.split("    stages:\n", 1)[1].rstrip("\n"))
         graph = json.loads((ROOT / "eng/pipelines/mono-android-startup-metadata.yml").read_text())
