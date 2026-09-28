@@ -533,4 +533,35 @@ RIDs have been checked. Only a small nonproduction pipeline artifact with
 logs and a root receipt is emitted; the SDK and packs are not republished.
 Success means observed Mac SDK verification only, **not** policy admission,
 guest readiness, installation or use. Run 3090048 established download access,
-not a successful Runtime Mac verification.
+but that ARM-host attempt did not perform Runtime Mac verification.
+
+### Observed held Intel Mac verification (run 3090066; overall pending)
+
+The single corrected manual run 3090066 used source
+`e5d91db40b7da1bf98e60464197670ed55e15462` and the `macOS-26` image.
+The native Darwin x86_64 / no-Rosetta gate passed. The same-org
+`DownloadPipelineArtifact@2` task retrieved the **existing** signed run
+3089937 artifact `mono-android-startup-real-signed-unadmitted-1` (ID
+76626017); there was no rebuild or re-sign. The verifier's retained receipt
+(SHA-256 `ea245c881bea886657046f7ba853398ed72466759cc1b41fc86cde67faf5baec`)
+binds the exact signed x64 package
+`356962a4419d14b0d5352bb291136401dbf41c26bfd0345216e55eb456f97a14`
+(26,501,239 bytes) and arm64 package
+`76f58515b8d0f1249fb8a5a2ebee188a2fa885efc63d523790da0bcd84b28fe7`
+(26,587,358 bytes) to source run 3089937 and its reviewed Real-signing
+receipt. The official osx-x64 SDK reported `10.0.401`; both actual
+`dotnet nuget verify --all` children exited 0 with no NuGet warnings in their
+retained logs (x64 log SHA-256
+`971e39b46a11799183fa0ace3559e22654291b4543e171e139457cdafb61fd36`;
+arm64 log SHA-256
+`2a7ba2e760f697a96c3459154fc54253dab7a224d7af07f0180a3199f1a2409d`).
+The SDK executable, `codesignctl.pem` and `timestampctl.pem` hashes matched
+before and after. `MonoStartupMacVerification.VerifyHeldRealSignatures`
+succeeded and published nonproduction evidence artifact 76628551.
+
+At this observation point, the separate inherited SDL stage and **overall
+run result were still in progress**. These verifier results establish normal
+Intel Mac SDK signature acceptance for only these two signed package bytes;
+the receipt records `admitted=false` and `guestExecution=false`. No feed
+publication, trust-root modification, guest installation or guest execution
+occurred. Do not treat this check as package admission or consumer readiness.
