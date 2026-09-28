@@ -421,3 +421,53 @@ retains signed archives, final inventories, sidecars and combined output before
 failing the job. Earlier signer/launch failures retain source-specific failure
 evidence without inventing a completed common receipt. No verification result
 authorizes deployment, package consumption or guest execution.
+
+### Observed manual Real-signing run 3089937 (unadmitted)
+
+After the held route above was reviewed, exactly one manual run of existing
+definition 679 used feature source
+`0d81e67d9044e68f7304a08df125ece26f054dbe` and the pinned 1ES commit
+`8bb89477eb3e61becfe1ab21442fe9aefb031b35`. `ValidateInputs`,
+`BuildRuntimePacks` and `RealSignRuntimePacks` succeeded. The overall result
+was `partiallySucceeded` because the separate, inherited `SDLSources` TSA
+task was `succeededWithIssues`; this is not evidence of a NuGet package
+timestamp failure or success. No permission grant, signing-rule change,
+publication, promotion, Mac installation or guest use was part of this run.
+
+The same-run unsigned input is Azure PipelineArtifact
+`mono-android-startup-unsigned-unadmitted-1` (artifact ID 76625767).
+Its x64 and arm64 archive SHA-256 values are respectively
+`948a66f1e59b3b4bdc6f66b9fa39713ac9e0b9577fe6b217916ceee3891e95b7`
+and `44749cdeacc05e860ca9e44f33daef6729d751f32fd43f1d818548ca1fba991d`.
+The corresponding Real-signed, still-unadmitted PipelineArtifact is
+`mono-android-startup-real-signed-unadmitted-1` (artifact ID 76626017).
+For version `10.0.12-startup.3089937.1.s0d81e67d9044`, its x64 archive is
+26,501,239 bytes with SHA-256
+`356962a4419d14b0d5352bb291136401dbf41c26bfd0345216e55eb456f97a14`;
+its arm64 archive is 26,587,358 bytes with SHA-256
+`76f58515b8d0f1249fb8a5a2ebee188a2fa885efc63d523790da0bcd84b28fe7`.
+The schema-3 signing receipt (SHA-256
+`774be14d603180cdec10abbde330ac81f12b13afbeb508784caf2d2bdea8a401`)
+binds each original unsigned hash to the signed hash, records
+`requestedSignType=Real`, and reports `verified-policy-unqualified`.
+Normal Windows `dotnet nuget verify --all` exited zero for both signed packs
+and observed a Microsoft Corporation author certificate fingerprint
+`9A1B131BEE0605433056A4EA3815478A8E177961A968C6C0027C1093D1FEB630`.
+
+These are **new candidate bytes**, not run 3087201's original unsigned or
+Test-signed packages. The new and original unsigned packs each contain 300
+members per RID. Across the two runs, the pinned container, NDK, Clang,
+Android SDK, Java and per-RID C/C++ compiler evidence agree; the CMake cache
+changes only in the configured build marker. The debugger and diagnostics
+tracing static archives differ only in the intended marker/version bytes;
+the crypto JAR's unpacked classes and compressed member payloads agree.
+However, both RIDs' debugger and tracing shared libraries have differing
+ELF `.text` and `.rodata` bytes and GNU build IDs (and debugger relocations
+also differ). Neither matching static archives after substitution nor
+matching JAR classes proves shared-library semantic equivalence. Retained
+unsigned receipts, all four archive hashes and all 1,200 decompressed ZIP
+member hashes were checked; transport receipts bind the downloaded artifacts.
+Actual Intel Mac SDK trust, package timestamp policy, consumer readiness and
+guest behavior remain unverified. Do not treat this Windows verification or
+the separate SDL result as admission; do not install or execute these packs
+on a guest without an independent review.
