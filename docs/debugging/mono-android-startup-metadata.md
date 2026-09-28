@@ -482,11 +482,16 @@ internal definition 679 and inherited 1ES SDL policy. Supply
 `monoStartupSourceCommit` with the exact separately reviewed verifier-route
 commit; the job rejects any mismatch against `Build.SourceVersion`. Enabling
 both diagnostic modes instead produces a failing, checkout-free guard stage. The verifier uses
-the existing official `Azure Pipelines` / `macos-latest-internal` Mac pool
-mapping; the script requires actual Darwin x86_64 hardware, rejects Rosetta,
+the existing `Azure Pipelines` pool with the explicit `macOS-26` hosted Intel
+image (rather than the ARM-routing `macos-latest-internal` image); the script
+still requires actual Darwin x86_64 hardware, rejects Rosetta,
 and refuses nonmanual, non-internal or production-branch contexts. This
 route does not rebuild, re-sign, consume an UPack/feed, or request credentials,
 service-connection grants, publishing or promotion.
+Run 3090048 retrieved the held artifact but failed the native-Intel host gate
+on `macos-latest-internal` before SDK use or package verification. The
+replacement image ran natively on Intel in a separate DevDiv verification;
+its availability in dnceng/internal is not established by that result.
 
 The job's `DownloadPipelineArtifact@2` selects **specific build 3089937** in
 the same `internal` project, definition 679, artifact
@@ -527,5 +532,5 @@ A nonzero verifier result fails the job after both
 RIDs have been checked. Only a small nonproduction pipeline artifact with
 logs and a root receipt is emitted; the SDK and packs are not republished.
 Success means observed Mac SDK verification only, **not** policy admission,
-guest readiness, installation or use. This route is proposed for review and
-provider preview; no Mac verification run is implied here.
+guest readiness, installation or use. Run 3090048 established download access,
+not a successful Runtime Mac verification.

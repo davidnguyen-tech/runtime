@@ -15,7 +15,7 @@ stages:
       timeoutInMinutes: 90
       pool:
         name: Azure Pipelines
-        vmImage: macos-latest-internal
+        vmImage: macOS-26
         os: macOS
       enablePublishing: false
       enablePublishBuildAssets: false

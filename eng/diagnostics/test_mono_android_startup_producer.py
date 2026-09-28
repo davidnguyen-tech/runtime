@@ -34,7 +34,7 @@ class ProducerTests(unittest.TestCase):
         self.assertIn("and(eq(parameters.verifyMonoStartupRealSignature, true), eq(parameters.enableMonoStartupMetadata, false))", root)
         self.assertIn("and(eq(parameters.enableMonoStartupMetadata, false), eq(parameters.verifyMonoStartupRealSignature, false))", root)
         for expected in ("condition: and(succeeded(), eq(variables['Build.Reason'], 'Manual'))",
-                         "name: Azure Pipelines", "vmImage: macos-latest-internal", "name: VerifyHeldRealSignatures",
+                         "name: Azure Pipelines", "vmImage: macOS-26", "name: VerifyHeldRealSignatures",
                          "buildType: specific", "project: internal", "definition: '679'",
                          "buildVersionToDownload: specific", "pipelineId: '3089937'",
                          "artifactName: mono-android-startup-real-signed-unadmitted-1",
