@@ -1,12 +1,13 @@
 {
   "parameters": [
     { "name": "sourceCommit", "type": "string" },
-    { "name": "attempt", "type": "number", "default": 1 }
+    { "name": "attempt", "type": "number", "default": 1 },
+    { "name": "realSign", "type": "boolean", "default": false }
   ],
   "stages": [
     {
       "stage": "MonoStartupMetadata",
-      "displayName": "Artifact-only Mono Android diagnostics (TEST signatures, not admitted)",
+      "displayName": "Artifact-only Mono Android diagnostics (signatures not admitted)",
       "dependsOn": [],
       "condition": "and(succeeded(), eq(variables['Build.Reason'], 'Manual'))",
       "variables": [
@@ -85,8 +86,8 @@
         {
           "template": "/eng/common/templates-official/job/job.yml",
           "parameters": {
-            "name": "TestSignRuntimePacks",
-            "displayName": "Normal Windows TEST signing and final-byte evidence",
+            "name": "${{ iif(parameters.realSign, 'RealSignRuntimePacks', 'TestSignRuntimePacks') }}",
+            "displayName": "Normal Windows diagnostic signing and final-byte evidence",
             "dependsOn": "BuildRuntimePacks",
             "timeoutInMinutes": 90,
             "pool": {
@@ -95,11 +96,11 @@
             },
             "enableMicrobuild": true,
             "enableMicrobuildForMacAndLinux": false,
-            "microbuildUseESRP": false,
+            "microbuildUseESRP": "${{ parameters.realSign }}",
             "enablePublishing": false,
             "enablePublishBuildAssets": false,
             "variables": [
-              { "name": "_SignType", "value": "test" },
+              { "name": "_SignType", "value": "${{ iif(parameters.realSign, 'real', 'test') }}" },
               { "name": "_TeamName", "value": "$(TeamName)" },
               { "name": "ProducerAttempt", "value": "$[ dependencies.BuildRuntimePacks.outputs['BuildEvidence.ProducerAttempt'] ]" }
             ],
@@ -117,8 +118,8 @@
               "outputs": [
                 {
                   "output": "pipelineArtifact",
-                  "targetPath": "$(Build.ArtifactStagingDirectory)/mono-startup-test-signed",
-                  "artifactName": "mono-android-startup-test-signed-unadmitted-$(System.JobAttempt)",
+                  "targetPath": "$(Build.ArtifactStagingDirectory)/mono-startup-${{ iif(parameters.realSign, 'real', 'test') }}-signed",
+                  "artifactName": "mono-android-startup-${{ iif(parameters.realSign, 'real', 'test') }}-signed-unadmitted-$(System.JobAttempt)",
                   "condition": "succeededOrFailed()",
                   "isProduction": false
                 }
@@ -126,15 +127,15 @@
             },
             "steps": [
               {
-                "pwsh": "python eng/diagnostics/produce-mono-android-startup.py --enable --test-sign --source $env:REVIEWED_SOURCE --run-id \"$env:BUILD_BUILDID.$env:STARTUP_EXPERIMENT_ATTEMPT\" --container $env:REVIEWED_CONTAINER --input $env:PRODUCER_INPUT --output $env:PRODUCER_OUTPUT\nexit $LASTEXITCODE\n",
+                "pwsh": "python eng/diagnostics/produce-mono-android-startup.py --enable ${{ iif(parameters.realSign, '--real-sign', '--test-sign') }} --source $env:REVIEWED_SOURCE --run-id \"$env:BUILD_BUILDID.$env:STARTUP_EXPERIMENT_ATTEMPT\" --container $env:REVIEWED_CONTAINER --input $env:PRODUCER_INPUT --output $env:PRODUCER_OUTPUT\nexit $LASTEXITCODE\n",
                 "workingDirectory": "$(Pipeline.Workspace)/s",
-                "displayName": "Run existing TEST signer without publishing or changing signing policy",
+                "displayName": "Run existing signer without publishing or changing signing policy",
                 "env": {
                   "REVIEWED_SOURCE": "${{ parameters.sourceCommit }}",
                   "REVIEWED_CONTAINER": "$(StartupMetadataImage)",
                   "PRODUCER_ATTEMPT": "$(ProducerAttempt)",
                   "PRODUCER_INPUT": "$(Pipeline.Workspace)/mono-startup-input",
-                  "PRODUCER_OUTPUT": "$(Build.ArtifactStagingDirectory)/mono-startup-test-signed",
+                  "PRODUCER_OUTPUT": "$(Build.ArtifactStagingDirectory)/mono-startup-${{ iif(parameters.realSign, 'real', 'test') }}-signed",
                   "STARTUP_1ES_COMMIT": "$(StartupMetadata1ESCommit)",
                   "STARTUP_1ES_ROOT": "$(Pipeline.Workspace)/startup-templates",
                   "STARTUP_EXPERIMENT_ATTEMPT": "${{ parameters.attempt }}"

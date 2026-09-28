@@ -2,7 +2,7 @@
 # Licensed to the .NET Foundation under one or more agreements.
 # The .NET Foundation licenses this file to you under the MIT license.
 
-"""Python 3.9+ manual artifact-only Mono Android build/normal TEST-sign evidence; never publishes."""
+"""Python 3.9+ manual artifact-only Mono Android build/normal signing evidence; never publishes."""
 
 import argparse
 import hashlib
@@ -734,26 +734,32 @@ def validate_build_input(folder, recipe, identity):
     return receipt
 
 
-def signing_properties(recipe, rid, official_build_id):
+def signing_properties(recipe, rid, official_build_id, sign_type="test"):
     require(rid in RID_ARCH, "Unexpected signing RID")
+    require(sign_type in ("test", "real"), "Unsupported diagnostic signing type")
     require(re.fullmatch(r"20[0-9]{6}\.[1-9][0-9]*", official_build_id), "Normal date-based OfficialBuildId required")
     return [
         "/p:TargetOS=android", f"/p:TargetArchitecture={RID_ARCH[rid][0]}", "/p:RuntimeFlavor=Mono",
         "/p:Subset=mono.runtime", f"/p:Version={recipe['version']}", f"/p:PackageVersion={recipe['version']}",
-        f"/p:OfficialBuildId={official_build_id}", "/p:SignType=test", "/p:DotNetSignType=test",
+        f"/p:OfficialBuildId={official_build_id}", f"/p:SignType={sign_type}", f"/p:DotNetSignType={sign_type}",
         "/p:PostBuildSign=false", "/p:Publish=false", "/p:DotNetPublishUsingPipelines=false",
         "/p:NuGetAudit=true", "/p:NuGetAuditMode=all", "/p:TreatWarningsAsErrors=true",
     ]
 
 
-def validate_signing_selection(evaluation, package, rid):
+def validate_signing_selection(evaluation, package, rid, sign_type="test"):
+    require(sign_type in ("test", "real"), "Unsupported diagnostic signing type")
     require(isinstance(evaluation, dict), "Invalid normal signing evaluation")
     properties = evaluation.get("Properties", {})
     require(properties.get("OfficialBuild", "").lower() == "true" and
-            properties.get("DotNetSignType") == "test" and
+            properties.get("SignType") == sign_type and
+            properties.get("DotNetSignType") == sign_type and
             properties.get("ForceDryRunSigning", "").lower() != "true" and
-            properties.get("PostBuildSign", "").lower() == "false" and properties.get("TargetRid") == rid,
-            "Evaluated normal signing properties differ from the TEST-only plan")
+            properties.get("PostBuildSign", "").lower() == "false" and
+            properties.get("Publish", "").lower() == "false" and
+            properties.get("DotNetPublishUsingPipelines", "").lower() == "false" and
+            properties.get("TargetRid") == rid,
+            "Evaluated normal signing properties differ from the reviewed signing plan")
     items = evaluation.get("Items", {}).get("ItemsToSign", [])
     require(len(items) == 1 and Path(items[0].get("FullPath", "")).resolve() == package.resolve(),
             "Normal ItemsToSign must select exactly this diagnostic RID package")
@@ -817,9 +823,10 @@ def write_postsign(output, recipe, build_receipt, before, after, signature, sign
     return reference(file)
 
 
-def test_sign(root, recipe, input_folder, output):
+def sign_runtime_packs(root, recipe, input_folder, output, sign_type):
+    require(sign_type in ("test", "real"), "Unsupported diagnostic signing type")
     require(not (root / "artifacts").exists() and not (root / ".packages").exists(),
-            "TEST-sign job requires a fresh checkout and isolated cache")
+            "Signing job requires a fresh checkout and isolated cache")
     require(output != input_folder and input_folder not in output.parents and output not in input_folder.parents,
             "Input and output evidence directories must be disjoint")
     output.mkdir(parents=True)
@@ -841,8 +848,8 @@ def test_sign(root, recipe, input_folder, output):
                PYTHONDONTWRITEBYTECODE="1")
     preflight = True
     try:
-        require(sys.platform == "win32", "Normal TEST signing requires the existing Windows MicroBuild job")
-        identity = pipeline_identity(recipe["source"], "TestSignRuntimePacks")
+        require(sys.platform == "win32", "Normal signing requires the existing Windows MicroBuild job")
+        identity = pipeline_identity(recipe["source"], "RealSignRuntimePacks" if sign_type == "real" else "TestSignRuntimePacks")
         receipt["pipeline"] = identity
         require(recipe["run_id"] == f"{identity['buildId']}.{os.environ.get('STARTUP_EXPERIMENT_ATTEMPT')}",
                 "Signing must preserve the common experiment identity, not its own job attempt")
@@ -860,7 +867,7 @@ def test_sign(root, recipe, input_folder, output):
         # The shared signer schema retains raw job identity, not the source-specific phase fields.
         signer = {key: identity[key] for key in ("organization", "project", "definitionId", "pipelinePath",
                                                 "pipelineCommit", "buildId", "jobAttempt", "jobName")}
-        signer.update(requestedSignType="Test", templates=templates)
+        signer.update(requestedSignType=sign_type.capitalize(), templates=templates)
         receipt["signer"] = signer
         shutil.copytree(input_folder, output / "build")
         shutil.copyfile(input_folder / "receipt.json", evidence / "build-receipt.json")
@@ -883,7 +890,7 @@ def test_sign(root, recipe, input_folder, output):
             # Keep ordinary signing globs unchanged; only this RID is staged at a time.
             require(not list(shipping.iterdir()), "Signing staging directory is not empty")
             shutil.copyfile(input_folder / "packages" / before["fileName"], package)
-            properties = signing_properties(recipe, rid, official_id)
+            properties = signing_properties(recipe, rid, official_id, sign_type)
             command = ["pwsh", "-NoLogo", "-NoProfile", "-File", "eng/common/build.ps1",
                        "-ci", "-configuration", "Release", "-projects", "src/mono/mono.proj"]
             start = len(observations)
@@ -893,10 +900,10 @@ def test_sign(root, recipe, input_folder, output):
             selection = execute([
                 str(dotnet), "msbuild", str(sign_project), f"/p:RepoRoot={root}{os.sep}",
                 "/p:Configuration=Release", *properties,
-                "-getProperty:OfficialBuild,DotNetSignType,ForceDryRunSigning,PostBuildSign,TargetRid",
+                "-getProperty:OfficialBuild,SignType,DotNetSignType,ForceDryRunSigning,PostBuildSign,Publish,DotNetPublishUsingPipelines,TargetRid",
                 "-getItem:ItemsToSign", "-nologo", "-verbosity:quiet",
             ], root, env, evidence, f"sign-selection.{rid}", observations)
-            validate_signing_selection(read_json(selection), package, rid)
+            validate_signing_selection(read_json(selection), package, rid, sign_type)
             try:
                 execute([*command, "-sign", *properties], root, env, evidence, f"normal-sign.{rid}", observations)
             finally:
@@ -906,7 +913,7 @@ def test_sign(root, recipe, input_folder, output):
                     shutil.move(str(binlog), evidence / f"sign.{rid}.binlog")
                 write_json(evidence / f"sign.{rid}.receipt.json", {
                     "schemaVersion": 1, "kind": "mono-android-startup-command-receipt",
-                    "operation": "normal-test-sign", "command_observations": observations[start:],
+                    "operation": f"normal-{sign_type}-sign", "command_observations": observations[start:],
                     "selection": reference(selection),
                     "binlog": reference(evidence / f"sign.{rid}.binlog") if (evidence / f"sign.{rid}.binlog").is_file() else None,
                 })
@@ -945,13 +952,23 @@ def test_sign(root, recipe, input_folder, output):
         persist_receipt(output, receipt)
 
 
+def test_sign(root, recipe, input_folder, output):
+    sign_runtime_packs(root, recipe, input_folder, output, "test")
+
+
+def real_sign(root, recipe, input_folder, output):
+    sign_runtime_packs(root, recipe, input_folder, output, "real")
+
+
 def main():
     require(sys.version_info >= (3, 9), "Producer requires Python 3.9 or newer")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--enable", action="store_true")
     parser.add_argument("--plan-only", action="store_true")
     parser.add_argument("--validate-pipeline", action="store_true")
-    parser.add_argument("--test-sign", action="store_true")
+    signing = parser.add_mutually_exclusive_group()
+    signing.add_argument("--test-sign", action="store_true")
+    signing.add_argument("--real-sign", action="store_true")
     parser.add_argument("--source", required=True)
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--container", required=True)
@@ -961,7 +978,7 @@ def main():
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
     recipe = plan(args.source, args.run_id, args.container, args.enable)
-    require(not (args.test_sign and args.plan_only), "TEST signing is not a plan-only operation")
+    require(not ((args.test_sign or args.real_sign) and args.plan_only), "Signing is not a plan-only operation")
     if args.validate_pipeline:
         pipeline_identity(recipe["source"], "ValidateInputs")
         require(recipe["container"] == PRODUCER_IMAGE, "Pipeline image differs from the reviewed baseline")
@@ -971,9 +988,10 @@ def main():
         print(json.dumps(recipe, indent=2))
         return
     root = Path(__file__).resolve().parents[2]
-    if args.test_sign:
-        require(args.input is not None and args.output is not None, "TEST signing requires owned input/output directories")
-        test_sign(root, recipe, args.input.resolve(), args.output.resolve())
+    if args.test_sign or args.real_sign:
+        require(args.input is not None and args.output is not None, "Signing requires owned input/output directories")
+        signer = real_sign if args.real_sign else test_sign
+        signer(root, recipe, args.input.resolve(), args.output.resolve())
     else:
         require(args.ndk is not None and args.ndk_revision is not None, "Reviewed NDK path/revision required")
         produce(root, recipe, args.ndk.resolve(), args.ndk_revision, args.output.resolve() if args.output else None)

@@ -23,7 +23,11 @@ pr: none
 
 parameters:
 - name: enableMonoStartupMetadata
-  displayName: Build and TEST-sign artifact-only Mono Android startup diagnostics
+  displayName: Build and sign artifact-only Mono Android startup diagnostics
+  type: boolean
+  default: false
+- name: monoStartupRealSign
+  displayName: Use approved Real signing instead of Test signing (manual diagnostic only)
   type: boolean
   default: false
 - name: monoStartupSourceCommit
@@ -54,6 +58,7 @@ extends:
         parameters:
           sourceCommit: ${{ parameters.monoStartupSourceCommit }}
           attempt: ${{ parameters.monoStartupAttempt }}
+          realSign: ${{ parameters.monoStartupRealSign }}
     - ${{ if eq(parameters.enableMonoStartupMetadata, false) }}:
       - ${{ if eq(variables['Build.SourceBranch'], 'refs/heads/main') }}:
         - stage: Localization

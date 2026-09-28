@@ -134,6 +134,7 @@ from `4271d88e0aebf3d04f188f1334c2220d80555ef6`. Set these root parameters:
 | `enableMonoStartupMetadata` | `true` |
 | `monoStartupSourceCommit` | Exact reviewed 40-character feature commit |
 | `monoStartupAttempt` | Positive whole-experiment attempt, normally `1` |
+| `monoStartupRealSign` | `false` (default, existing Test path); `true` selects the separately reviewed Real path |
 
 Both ABIs and the signing job use the same
 `10.0.12-startup.<BuildId>.<ExperimentAttempt>.s<source12>` version and marker.
@@ -174,7 +175,8 @@ The diagnostic template checkout is explicitly included in normal SDL source
 scanning only on that path; self coverage and ordinary SDL settings are preserved.
 
 `MonoStartupMetadata` contains `ValidateInputs`, `BuildRuntimePacks`, and
-`TestSignRuntimePacks`, in dependency order. The normal official job wrapper
+`TestSignRuntimePacks` by default, in dependency order. Explicit Real opt-in
+replaces only the signing phase with `RealSignRuntimePacks`. The normal official job wrapper
 and branch-selected internal pool are used throughout. The Linux job selects
 the existing named `android` container. Only the enabled official diagnostic
 path pins that resource in `pipeline-with-resources.yml`; ordinary official
@@ -246,6 +248,46 @@ the product or restore the unrelated libraries/test graph. Audit gates remain
 enabled. Only one diagnostic RID archive is staged at a time; the actual
 normal Arcade `Sign.proj` evaluation must select exactly that archive before
 signing. Neither a final RID property nor a planned command proves selection.
+
+### Held Real-signing route (not authorized to queue)
+
+`monoStartupRealSign=true` is an explicit, default-off parameter on the same
+manual-only diagnostic stage of definition 679. It uses the existing Windows
+MicroBuild plugin with `_SignType=real`, `microbuildUseESRP=true` and the
+ordinary `MicroBuild Signing Task (DevDiv)` and internal PME service-connection
+selection in `install-microbuild.yml`. Its sign-only MSBuild invocation specifies
+`SignType=real` and `DotNetSignType=real`, without changing the repository's
+signing rules, certificates, revocation settings or trust stores. Both modes
+require the evaluated `ItemsToSign` to contain only the staged x64 or arm64
+package, one RID at a time. Neither `enablePublishing` nor
+`enablePublishBuildAssets` is enabled; the final output is a nonproduction 1ES
+pipeline artifact named `mono-android-startup-real-signed-unadmitted-<SignJobAttempt>`.
+The unsigned build artifact is unchanged and separately retained. The Real
+post-sign receipts distinguish `requestedSignType=Real` and
+`normal-real-sign`; ordinary verification remains **policy-unqualified**,
+even when it exits zero. This route neither grants service-connection access
+nor establishes that the service will accept the diagnostic source/branch,
+NuGet certificate chain, timestamping policy or clean Mac SDK consumer.
+
+Run 3087201 retained original unsigned x64 and arm64 packages in
+`mono-android-startup-unsigned-unadmitted-1` (artifact ID 76563209);
+their SHA-256 values are respectively
+`782a7ecf2dfcef327e3f42078f0e5e3f03a220af5cbfbf0320838aeab42a9994`
+and `2e05844311f63daf4a46e26eef25961863e294a370efb1b1cd2935428cebeece`.
+Those originals were Test-signed in that run; **do not feed its Test outputs
+into Real signing**. The current signer refuses direct cross-run unsigned input:
+it binds the producer's original pipeline build ID, source commit, attempt,
+whole plan, template bytes and hashes to the signing job. A future cross-run
+route would require its own reviewed provenance/receipt/hash gate. The current
+Real opt-in instead rebuilds both normal packs in the same run; its
+`10.0.12-startup.<new BuildId>.<Attempt>.s<new source12>` version and marker
+must not be presented as run 3087201's bytes. Compare the new unsigned
+package/member/native hashes to those originals as a **new candidate** before
+any consumption. Leave Real CI queueing, service-policy admission, Mac
+installation and guest use on hold pending explicit review; a repository-backed
+preview only compiles a proposed graph and never proves signing authorization.
+The separate runtime `TSAUpload` external-template configuration failure is
+not package timestamp verification and must not be used to waive that check.
 
 Only 1ES pipeline-artifact outputs are requested. There is no Publish action,
 BAR/feed/channel registration or symbol promotion. Artifact names are

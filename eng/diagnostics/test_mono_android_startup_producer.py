@@ -77,13 +77,22 @@ class ProducerTests(unittest.TestCase):
         self.assertEqual(baseline.returncode, 0, baseline.stderr)
         original = baseline.stdout
         current = (ROOT / producer.PIPELINE_PATH).read_text()
-        self.assertTrue(current.startswith(original.split("variables:\n")[0]))
+        real_parameter = ("- name: monoStartupRealSign\n"
+                          "  displayName: Use approved Real signing instead of Test signing (manual diagnostic only)\n"
+                          "  type: boolean\n"
+                          "  default: false\n")
+        self.assertEqual(current.count(real_parameter), 1)
+        current_default = current.replace(real_parameter, "").replace(
+            "Build and sign artifact-only Mono Android startup diagnostics",
+            "Build and TEST-sign artifact-only Mono Android startup diagnostics")
+        self.assertTrue(current_default.startswith(original.split("variables:\n")[0]))
         image_flag = "    enableMonoStartupMetadata: ${{ parameters.enableMonoStartupMetadata }}\n"
         self.assertEqual(current.count(image_flag), 1)
-        self.assertEqual(current.replace(image_flag, "").split("variables:\n", 1)[1].split("    stages:\n", 1)[0],
+        self.assertEqual(current_default.replace(image_flag, "").split("variables:\n", 1)[1].split("    stages:\n", 1)[0],
                          original.split("variables:\n", 1)[1].split("    stages:\n", 1)[0])
         self.assertIn("name: enableMonoStartupMetadata", current)
         self.assertIn("  type: boolean\n  default: false\n", current)
+        self.assertIn("          realSign: ${{ parameters.monoStartupRealSign }}\n", current)
         enabled, disabled = current.split("    stages:\n", 1)[1].split(
             "    - ${{ if eq(parameters.enableMonoStartupMetadata, false) }}:\n")
         self.assertEqual(enabled,
@@ -91,13 +100,15 @@ class ProducerTests(unittest.TestCase):
                          "      - template: /eng/pipelines/mono-android-startup-metadata.yml\n"
                          "        parameters:\n"
                          "          sourceCommit: ${{ parameters.monoStartupSourceCommit }}\n"
-                         "          attempt: ${{ parameters.monoStartupAttempt }}\n")
+                         "          attempt: ${{ parameters.monoStartupAttempt }}\n"
+                         "          realSign: ${{ parameters.monoStartupRealSign }}\n")
         default_stages = "\n".join(line[2:] if line else "" for line in disabled.splitlines())
         self.assertEqual(default_stages, original.split("    stages:\n", 1)[1].rstrip("\n"))
         graph = json.loads((ROOT / "eng/pipelines/mono-android-startup-metadata.yml").read_text())
         self.assertEqual(set(graph), {"parameters", "stages"})
         self.assertEqual(graph["parameters"], [{"name": "sourceCommit", "type": "string"},
-                                               {"name": "attempt", "type": "number", "default": 1}])
+                                               {"name": "attempt", "type": "number", "default": 1},
+                                               {"name": "realSign", "type": "boolean", "default": False}])
         stage, = graph["stages"]
         self.assertEqual(stage["condition"], "and(succeeded(), eq(variables['Build.Reason'], 'Manual'))")
         self.assertEqual(len(stage["jobs"]), 3)
@@ -120,12 +131,16 @@ class ProducerTests(unittest.TestCase):
         variables = {item["name"]: item["value"] for item in sign["variables"]}
         self.assertEqual(variables["ProducerAttempt"],
                          "$[ dependencies.BuildRuntimePacks.outputs['BuildEvidence.ProducerAttempt'] ]")
-        self.assertEqual(variables["_SignType"], "test")
+        self.assertEqual(variables["_SignType"], "${{ iif(parameters.realSign, 'real', 'test') }}")
         self.assertTrue(sign["enableMicrobuild"])
-        self.assertFalse(sign["microbuildUseESRP"])
+        self.assertEqual(sign["microbuildUseESRP"], "${{ parameters.realSign }}")
         self.assertFalse(sign["enableMicrobuildForMacAndLinux"])
         self.assertFalse(sign["enablePublishing"])
         self.assertFalse(sign["enablePublishBuildAssets"])
+        self.assertEqual(sign["name"], "${{ iif(parameters.realSign, 'RealSignRuntimePacks', 'TestSignRuntimePacks') }}")
+        self.assertEqual(sign["steps"][0]["pwsh"].count("--real-sign', '--test-sign"), 1)
+        self.assertEqual(sign["templateContext"]["outputs"][0]["artifactName"],
+                         "mono-android-startup-${{ iif(parameters.realSign, 'real', 'test') }}-signed-unadmitted-$(System.JobAttempt)")
         for job in (build, sign):
             self.assertEqual(job["steps"][0]["env"]["STARTUP_EXPERIMENT_ATTEMPT"], "${{ parameters.attempt }}")
             self.assertEqual([step["checkout"] for step in job["preSteps"]], ["self", "1ESPipelineTemplates"])
@@ -139,6 +154,30 @@ class ProducerTests(unittest.TestCase):
         plugin = (ROOT / "eng/common/core-templates/steps/install-microbuild.yml").read_text()
         self.assertIn("microbuildUseESRP", plugin)
         self.assertIn("in(variables['_SignType'], 'real', 'test')", plugin)
+        self.assertIn("ConnectedServiceName: 'MicroBuild Signing Task (DevDiv)'", plugin)
+        self.assertIn("if eq(parameters.microbuildUseESRP, true)", plugin)
+        for real_sign, phase, sign_type in ((False, "TestSignRuntimePacks", "test"),
+                                             (True, "RealSignRuntimePacks", "real")):
+            with self.subTest(real_sign=real_sign):
+                resolved = json.loads(json.dumps(sign).replace(
+                    "${{ iif(parameters.realSign, 'RealSignRuntimePacks', 'TestSignRuntimePacks') }}", phase
+                ).replace(
+                    "${{ iif(parameters.realSign, '--real-sign', '--test-sign') }}", f"--{sign_type}-sign"
+                ).replace(
+                    "${{ iif(parameters.realSign, 'real', 'test') }}", sign_type
+                ).replace(
+                    '"${{ parameters.realSign }}"', "true" if real_sign else "false"
+                ))
+                self.assertEqual(resolved["name"], phase)
+                self.assertEqual(resolved["microbuildUseESRP"], real_sign)
+                self.assertEqual(resolved["variables"][0]["value"], sign_type)
+                self.assertIn(f"--{sign_type}-sign", resolved["steps"][0]["pwsh"])
+                self.assertEqual(resolved["templateContext"]["outputs"][0]["artifactName"],
+                                 f"mono-android-startup-{sign_type}-signed-unadmitted-$(System.JobAttempt)")
+                self.assertEqual(resolved["artifacts"]["download"]["name"],
+                                 "mono-android-startup-unsigned-unadmitted-$(ProducerAttempt)")
+                self.assertFalse(resolved["enablePublishing"])
+                self.assertFalse(resolved["enablePublishBuildAssets"])
 
     def test_diagnostic_android_resource_default_matrix(self):
         path = "eng/pipelines/common/templates/pipeline-with-resources.yml"
@@ -191,7 +230,8 @@ class ProducerTests(unittest.TestCase):
         graph = json.loads((ROOT / "eng/pipelines/mono-android-startup-metadata.yml").read_text())
         jobs = [job["parameters"] for job in graph["stages"][0]["jobs"]]
         build = next(job for job in jobs if job["name"] == "BuildRuntimePacks")
-        sign = next(job for job in jobs if job["name"] == "TestSignRuntimePacks")
+        sign = next(job for job in jobs if job["name"] ==
+                    "${{ iif(parameters.realSign, 'RealSignRuntimePacks', 'TestSignRuntimePacks') }}")
         for checkout in build["preSteps"]:
             self.assertEqual(checkout["target"], {"container": "host"})
         self.assertEqual([step["path"] for step in build["preSteps"]], ["s", "startup-templates"])
@@ -203,7 +243,7 @@ class ProducerTests(unittest.TestCase):
         self.assertNotIn("$(", step["bash"])
         self.assertNotIn("container", sign)
         self.assertEqual(sign["steps"][0]["env"]["PRODUCER_OUTPUT"],
-                         "$(Build.ArtifactStagingDirectory)/mono-startup-test-signed")
+                         "$(Build.ArtifactStagingDirectory)/mono-startup-${{ iif(parameters.realSign, 'real', 'test') }}-signed")
         self.assertEqual(sign["steps"][0]["env"]["STARTUP_1ES_ROOT"], "$(Pipeline.Workspace)/startup-templates")
         self.assertEqual(build["templateContext"]["outputs"][0]["targetPath"],
                          "$(Build.ArtifactStagingDirectory)/mono-startup-build")
@@ -573,7 +613,7 @@ class ProducerTests(unittest.TestCase):
                             producer.pipeline_identity(SOURCE, "BuildRuntimePacks")
 
     def test_provider_phase_and_raw_job_instance_identity(self):
-        for phase in ("ValidateInputs", "BuildRuntimePacks", "TestSignRuntimePacks"):
+        for phase in ("ValidateInputs", "BuildRuntimePacks", "TestSignRuntimePacks", "RealSignRuntimePacks"):
             with self.subTest(phase=phase), patch.dict(producer.os.environ, self.pipeline_environment(phase)):
                 identity = producer.pipeline_identity(SOURCE, phase)
                 self.assertEqual(set(identity), {"organization", "project", "definitionId", "pipelinePath",
@@ -1209,7 +1249,7 @@ class ProducerTests(unittest.TestCase):
                     external.assert_not_called()
 
     def sign_fixture(self, folder, verification_exit=0, sign_exit=0, verifier_launch_failure=False,
-                     sign_attempt=1, build_attempt=1):
+                     sign_attempt=1, build_attempt=1, sign_type="test", phase=None):
         """Exercise real ZIP/receipt orchestration with explicitly mocked external signing boundaries."""
         input_folder = folder / "input"
         build = self.build_fixture(input_folder, build_attempt)
@@ -1221,7 +1261,8 @@ class ProducerTests(unittest.TestCase):
             stdout = kwargs["stdout"]
             if command[0] == "pwsh":
                 self.assertIn("/p:Publish=false", command)
-                self.assertIn("/p:DotNetSignType=test", command)
+                self.assertIn(f"/p:SignType={sign_type}", command)
+                self.assertIn(f"/p:DotNetSignType={sign_type}", command)
                 self.assertIn("/p:NuGetAudit=true", command)
                 self.assertEqual(command[command.index("-projects") + 1], "src/mono/mono.proj")
                 self.assertNotIn("-build", command)
@@ -1238,8 +1279,9 @@ class ProducerTests(unittest.TestCase):
                 package, = (root / "artifacts/packages/Release/Shipping").glob("*.nupkg")
                 arch = next(value.split("=", 1)[1] for value in command if value.startswith("/p:TargetArchitecture="))
                 stdout.write(json.dumps({
-                    "Properties": {"OfficialBuild": "true", "DotNetSignType": "test", "ForceDryRunSigning": "",
-                                   "PostBuildSign": "false", "TargetRid": "android-" + arch},
+                    "Properties": {"OfficialBuild": "true", "SignType": sign_type, "DotNetSignType": sign_type,
+                                   "ForceDryRunSigning": "", "PostBuildSign": "false", "Publish": "false",
+                                   "DotNetPublishUsingPipelines": "false", "TargetRid": "android-" + arch},
                     "Items": {"ItemsToSign": [{"FullPath": str(package)}]},
                 }).encode())
             elif "--version" in command:
@@ -1254,7 +1296,8 @@ class ProducerTests(unittest.TestCase):
             else:
                 self.fail("Unexpected command in explicit mock boundary: " + repr(command))
             return producer.subprocess.CompletedProcess(command, 0)
-        environment = {**self.pipeline_environment("TestSignRuntimePacks"), "SYSTEM_JOBATTEMPT": str(sign_attempt),
+        environment = {**self.pipeline_environment(phase or ("RealSignRuntimePacks" if sign_type == "real" else
+                                                              "TestSignRuntimePacks")), "SYSTEM_JOBATTEMPT": str(sign_attempt),
                        "PRODUCER_ATTEMPT": str(build_attempt)}
         with patch.dict(producer.os.environ, environment), \
                 patch.object(producer.sys, "platform", "win32"), \
@@ -1264,10 +1307,38 @@ class ProducerTests(unittest.TestCase):
                 patch.object(producer.subprocess, "run", side_effect=test_only_command):
             if sign_exit or verification_exit or verifier_launch_failure:
                 with self.assertRaises((ValueError, FileNotFoundError)):
-                    producer.test_sign(root, self.recipe(), input_folder, output)
+                    producer.sign_runtime_packs(root, self.recipe(), input_folder, output, sign_type)
             else:
-                producer.test_sign(root, self.recipe(), input_folder, output)
+                producer.sign_runtime_packs(root, self.recipe(), input_folder, output, sign_type)
         return output
+
+    def test_real_sign_evidence_and_phase_are_isolated_from_test(self):
+        for exit_code in (0, 1):
+            with self.subTest(exit_code=exit_code), tempfile.TemporaryDirectory() as folder:
+                output = self.sign_fixture(Path(folder), sign_type="real", verification_exit=exit_code,
+                                           sign_attempt=2, build_attempt=1)
+                receipt = producer.read_json(output / "receipt.json")
+                self.assertEqual(receipt["pipeline"]["phaseName"], "RealSignRuntimePacks")
+                self.assertEqual(receipt["signer"]["requestedSignType"], "Real")
+                self.assertFalse(receipt["publication"])
+                self.assertEqual(len(receipt["packages"]), 2)
+                for entry in receipt["packages"]:
+                    post = producer.read_json(output / "postsign" / entry["fileName"])
+                    self.assertEqual(post["signer"]["requestedSignType"], "Real")
+                    sign = producer.read_json(output / "postsign" / f"sign.{post['rid']}.receipt.json")
+                    self.assertEqual(sign["operation"], "normal-real-sign")
+                    self.assertEqual(post["input"]["sha256"],
+                                     producer.sha256(output / "build/packages" / post["input"]["fileName"]))
+                self.assertEqual(receipt["status"],
+                                 "verified-policy-unqualified" if exit_code == 0 else "produced-verification-failed")
+
+    def test_real_sign_rejects_test_phase_before_commands(self):
+        with tempfile.TemporaryDirectory() as folder:
+            with self.assertRaisesRegex(ValueError, "required RealSignRuntimePacks"):
+                self.sign_fixture(Path(folder), sign_type="real", phase="TestSignRuntimePacks")
+            receipt = producer.read_json(Path(folder) / "output/receipt.json")
+            self.assertEqual(receipt["status"], "failed")
+            self.assertEqual(receipt["command_observations"], [])
 
     def test_postsign_success_and_failed_verification_preserve_evidence(self):
         for exit_code in (0, 1):
@@ -1338,12 +1409,20 @@ class ProducerTests(unittest.TestCase):
 
     def test_signing_selection_and_properties_fail_closed(self):
         package = Path("exact-package.nupkg").resolve()
-        evaluation = {"Properties": {"OfficialBuild": "true", "DotNetSignType": "test", "ForceDryRunSigning": "",
-                                      "PostBuildSign": "false", "TargetRid": "android-x64"},
+        evaluation = {"Properties": {"OfficialBuild": "true", "SignType": "test", "DotNetSignType": "test",
+                                      "ForceDryRunSigning": "", "PostBuildSign": "false", "Publish": "false",
+                                      "DotNetPublishUsingPipelines": "false", "TargetRid": "android-x64"},
                       "Items": {"ItemsToSign": [{"FullPath": str(package)}]}}
         producer.validate_signing_selection(evaluation, package, "android-x64")
-        for key, value in [("OfficialBuild", "false"), ("DotNetSignType", "real"), ("ForceDryRunSigning", "true"),
-                           ("PostBuildSign", "true"), ("TargetRid", "android-arm64")]:
+        real = {**evaluation, "Properties": {**evaluation["Properties"], "SignType": "real",
+                                             "DotNetSignType": "real"}}
+        producer.validate_signing_selection(real, package, "android-x64", "real")
+        for mode, selected in (("real", evaluation), ("test", real)):
+            with self.assertRaisesRegex(ValueError, "properties"):
+                producer.validate_signing_selection(selected, package, "android-x64", mode)
+        for key, value in [("OfficialBuild", "false"), ("SignType", "real"), ("DotNetSignType", "real"),
+                           ("ForceDryRunSigning", "true"), ("PostBuildSign", "true"), ("Publish", "true"),
+                           ("DotNetPublishUsingPipelines", "true"), ("TargetRid", "android-arm64")]:
             with self.subTest(key=key), self.assertRaisesRegex(ValueError, "properties"):
                 producer.validate_signing_selection({**evaluation, "Properties": {**evaluation["Properties"], key: value}},
                                                     package, "android-x64")
@@ -1353,6 +1432,11 @@ class ProducerTests(unittest.TestCase):
         for value in ("", "123.1", "20260924.1\n", "20260924.1;echo"):
             with self.assertRaisesRegex(ValueError, "OfficialBuildId"):
                 producer.signing_properties(self.recipe(), "android-x64", value)
+        self.assertIn("/p:DotNetSignType=real",
+                      producer.signing_properties(self.recipe(), "android-arm64", "20260924.1", "real"))
+        for mode in ("", "Test", "dryrun", "real;echo"):
+            with self.assertRaisesRegex(ValueError, "Unsupported"):
+                producer.signing_properties(self.recipe(), "android-x64", "20260924.1", mode)
 
     def test_producer_refuses_nonmanual(self):
         with tempfile.TemporaryDirectory() as folder, patch.object(producer.sys, "platform", "linux"), \
