@@ -132,7 +132,8 @@ class PerfPipelineTests(unittest.TestCase):
         )
         self.assertIn(
             "${{ if or(notin(variables['Build.Reason'], 'Schedule', 'Manual'), "
-            "parameters.runPrivateJobs) }}:",
+            "parameters.runPrivateJobs, and(eq(parameters.externalRuntimeMode, true), "
+            "eq(parameters.externalRuntimeScope, 'arm64'))) }}:",
             self.perf_slow,
         )
         self.assertIn(

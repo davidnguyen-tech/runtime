@@ -125,7 +125,7 @@ extends:
           parameters:
             ${{ if or(in(variables['Build.Reason'], 'Schedule'), parameters.runScheduledJobs) }}:
               runScheduledJobs: true
-            ${{ if or(notin(variables['Build.Reason'], 'Schedule', 'Manual'), parameters.runPrivateJobs) }}:
+            ${{ if or(notin(variables['Build.Reason'], 'Schedule', 'Manual'), parameters.runPrivateJobs, and(eq(parameters.externalRuntimeMode, true), eq(parameters.externalRuntimeScope, 'arm64'))) }}:
               runPrivateJobs: true
             runtimeRepoAlias: self
             performanceRepoAlias: performance
