@@ -11,8 +11,14 @@ parameters:
 - name: externalRuntimeMode
   type: boolean
   default: false
-# Definition 1012 supports only the complete external-runtime matrix. It intentionally
-# does not expose externalRuntimeScope, so Runs API requests for an x64 scope are rejected.
+# Only opt-in ARM64 CoreCLR Ampere workers use this scope; the default keeps
+# the ordinary scheduled and manually selected job matrix unchanged.
+- name: externalRuntimeScope
+  type: string
+  default: full
+  values:
+  - full
+  - arm64
 - name: externalRuntimeContractVersion
   type: string
   default: ''
@@ -83,7 +89,7 @@ resources:
       type: git
       name: internal/dotnet-performance
       # Restore the merged/default performance ref before merging this runtime branch.
-      ref: 2f655d738d9aff0a0cb440ba5967cde19c8d4ad3
+      ref: bfc25a0fe0e9b148f8a5baf10efc41200e15e4a0
 
 variables:
   - template: /eng/pipelines/common/variables.yml
@@ -128,6 +134,7 @@ extends:
               externalRuntime:
                 contractVersion: ${{ parameters.externalRuntimeContractVersion }}
                 coverageRowsSha256: ${{ parameters.externalRuntimeCoverageRowsSha256 }}
+                scope: ${{ parameters.externalRuntimeScope }}
                 producerDefinitionId: ${{ parameters.externalRuntimeProducerDefinitionId }}
                 producerBuildId: ${{ parameters.externalRuntimeProducerBuildId }}
                 producerBuildNumber: ${{ parameters.externalRuntimeProducerBuildNumber }}

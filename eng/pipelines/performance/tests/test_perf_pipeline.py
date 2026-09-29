@@ -26,10 +26,6 @@ COMMON_PARAMETERS = {
     "externalRuntimeAttempt": ("number", "1"),
 }
 
-PERF_ONLY_PARAMETERS = {
-    "externalRuntimeScope": ("string", "full"),
-}
-
 EXTERNAL_RUNTIME_FIELDS = (
     ("contractVersion", "externalRuntimeContractVersion"),
     ("coverageRowsSha256", "externalRuntimeCoverageRowsSha256"),
@@ -89,20 +85,24 @@ class PerfPipelineTests(unittest.TestCase):
             )
             self.assertNotIn("externalRuntimeArtifactMap\n", parameters)
 
-        for name, (expected_type, expected_default) in PERF_ONLY_PARAMETERS.items():
-            match = parameter_declaration(self.perf, name)
+        for text, values in (
+            (self.perf, ("full", "x64")),
+            (self.perf_slow, ("full", "arm64")),
+        ):
+            match = parameter_declaration(text, "externalRuntimeScope")
             self.assertIsNotNone(match)
-            self.assertEqual((expected_type, expected_default), match.groups())
-            self.assertIsNone(parameter_declaration(self.perf_slow, name))
-        self.assertIn(
-            "  - name: externalRuntimeScope\n"
-            "    type: string\n"
-            "    default: full\n"
-            "    values:\n"
-            "      - full\n"
-            "      - x64",
-            self.perf,
-        )
+            self.assertEqual(("string", "full"), match.groups())
+            parameters = text.split("\ntrigger:", 1)[0]
+            indent = "    " if text == self.perf else "  "
+            value_indent = "      " if text == self.perf else "  "
+            self.assertIn(
+                "externalRuntimeScope\n"
+                f"{indent}type: string\n"
+                f"{indent}default: full\n"
+                f"{indent}values:\n"
+                + "".join(f"{value_indent}- {value}\n" for value in values).rstrip(),
+                parameters,
+            )
 
     def test_disabled_702_graph_retains_native_templates_and_conditions(self):
         self.assertIn(
@@ -140,10 +140,7 @@ class PerfPipelineTests(unittest.TestCase):
             self.perf_slow,
         )
         self.assertNotIn("if eq(parameters.externalRuntimeMode, false)", self.perf_slow)
-        self.assertIn(
-            "It intentionally\n# does not expose externalRuntimeScope",
-            self.perf_slow,
-        )
+        self.assertIn("scope: ${{ parameters.externalRuntimeScope }}", self.perf_slow)
 
     def test_complete_manifest_is_forwarded_without_row_filtering(self):
         expected_templates = {
@@ -160,12 +157,7 @@ class PerfPipelineTests(unittest.TestCase):
                     block = text[start : start + 2600]
                     self.assertIn("externalRuntimeMode: true", block)
                     self.assertIn("externalRuntime:", block)
-                    fields = EXTERNAL_RUNTIME_FIELDS
-                    if text == self.perf_slow:
-                        fields = tuple(
-                            item for item in fields if item[0] != "scope"
-                        )
-                    for field, parameter in fields:
+                    for field, parameter in EXTERNAL_RUNTIME_FIELDS:
                         self.assertIn(
                             f"{field}: ${{{{ parameters.{parameter} }}}}",
                             block,
@@ -175,11 +167,11 @@ class PerfPipelineTests(unittest.TestCase):
                     self.assertNotIn("availability.status", block)
 
     def test_exact_performance_commit_pins_both_resources_for_preview(self):
-        for text in (self.perf, self.perf_slow):
-            self.assertIn(
-                "ref: 2f655d738d9aff0a0cb440ba5967cde19c8d4ad3",
-                text,
-            )
+        for text, sha in (
+            (self.perf, "2f655d738d9aff0a0cb440ba5967cde19c8d4ad3"),
+            (self.perf_slow, "bfc25a0fe0e9b148f8a5baf10efc41200e15e4a0"),
+        ):
+            self.assertIn(f"ref: {sha}", text)
             self.assertIn(
                 "Restore the merged/default performance ref before merging this runtime branch.",
                 text,
